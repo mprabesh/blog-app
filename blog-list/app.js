@@ -28,7 +28,7 @@ mongoose
 
 app.use(requestLogger);
 
-if (process.env.NODE_ENV === "test") {
+if (process.env.NODE_ENV === 'test') {
   app.use("/api/testing", testingRouter);
 }
 app.use("/api/login", loginController);

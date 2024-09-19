@@ -12,6 +12,9 @@ module.exports = {
   settings: { react: { version: "18.2" } },
   plugins: ["react-refresh", "cypress"],
   rules: {
+    "no-unused-vars":[1],
+    "no-console":"warn",
+    "quotes": [1, "double",{"allowTemplateLiterals":true}],
     "react-refresh/only-export-components": [
       "warn",
       { allowConstantExport: true },

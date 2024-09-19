@@ -42,8 +42,8 @@ describe("Blog app", function () {
       });
       it("able to logout",function(){
         cy.get("#logout-btn").should("exist");
-        cy.get('#logout-btn').click();
-        cy.url().should('include', '/');
+        cy.get("#logout-btn").click();
+        cy.url().should("include", "/");
       })
 
       it("add new blog", function () {

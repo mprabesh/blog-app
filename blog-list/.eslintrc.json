@@ -1,5 +1,6 @@
 {
   "env": {
+    "node":true,
     "browser": true,
     "commonjs": true,
     "es2021": true,
@@ -9,5 +10,10 @@
   "parserOptions": {
     "ecmaVersion": "latest"
   },
-  "rules": {}
+  "rules": {
+    "no-console":"warn",
+    "quotes": [1, "double",{"allowTemplateLiterals":true}],
+    "eqeqeq":"warn",
+    "no-var":"error"
+  }
 }

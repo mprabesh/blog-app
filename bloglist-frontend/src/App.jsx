@@ -25,7 +25,7 @@ const App = () => {
       .then((result) => {
         setBlogs(result.data);
       })
-      .catch((err) => console.log(err));
+      .catch((err) => {err});
     setuser(JSON.parse(window.localStorage.getItem("userData")));
   }, []);
 
