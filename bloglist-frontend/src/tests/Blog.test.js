@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { userEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event"; // Correct import
 import Blog from "../components/Blog";
 import AddBlogForm from "../components/AddBlogForm";
 
@@ -14,12 +14,27 @@ const blog = {
 };
 
 describe("Blog App tests", () => {
+  // Mocking localStorage for tests
+beforeEach(() => {
+  const userData = { username: "testUser" };
+  jest.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+    if (key === "userData") {
+      return JSON.stringify(userData);
+    }
+    return null;
+  });
+});
+
+afterEach(() => {
+  // Clear the mock after each test to avoid interference
+  jest.restoreAllMocks();
+});
+
   test("component displaying a blog renders the blog's title and author, but does not render its URL or number of likes by default", () => {
     const { container } = render(<Blog blog={blog} />);
     const div = container.querySelector(".a_blog");
-    const element = screen.queryByText("likes");
     expect(div).toHaveTextContent("7 wonders of the world");
-    expect(element).toBeNull();
+    expect(screen.queryByText("likes")).toBeNull();
     expect(screen.queryByText("url")).toBeNull();
   });
 
@@ -39,11 +54,10 @@ describe("Blog App tests", () => {
     const user = userEvent.setup();
     const button = screen.getByText("view");
     await user.click(button);
-    expect(screen.queryByText("like")).toBeDefined();
     const likeButton = screen.getByText("like");
     await user.click(likeButton);
     await user.click(likeButton);
-    expect(mockFunction.mock.calls).toHaveLength(2);
+    expect(mockFunction).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -58,19 +72,13 @@ describe("<AddBlogForm />", () => {
     const url = component.container.querySelector("#url");
     const form = component.container.querySelector("form");
 
-    fireEvent.change(title, {
-      target: { value: "Testing Title" },
-    });
-    fireEvent.change(author, {
-      target: { value: "Prabesh Magar" },
-    });
-    fireEvent.change(url, {
-      target: { value: "http://www.gameforfun.com" },
-    });
+    fireEvent.change(title, { target: { value: "Testing Title" } });
+    fireEvent.change(author, { target: { value: "Prabesh Magar" } });
+    fireEvent.change(url, { target: { value: "http://www.gameforfun.com" } });
 
     fireEvent.submit(form);
 
-    expect(mockFunction.mock.calls).toHaveLength(1);
+    expect(mockFunction).toHaveBeenCalledTimes(1);
     expect(mockFunction.mock.calls[0][0].title).toBe("Testing Title");
     expect(mockFunction.mock.calls[0][0].author).toBe("Prabesh Magar");
     expect(mockFunction.mock.calls[0][0].url).toBe("http://www.gameforfun.com");

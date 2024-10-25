@@ -18,9 +18,8 @@ app.use(express.json());
 app.use(cors());
 
 mongoose.set("strictQuery", false);
-
 mongoose
-  .connect(mongoURL)
+  .connect(mongoURL,{ useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => {
     info("Connected to DB successfully!!");
   })
