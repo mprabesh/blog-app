@@ -17,6 +17,7 @@ const {
 app.use(express.json());
 app.use(cors());
 
+
 mongoose.set("strictQuery", false);
 mongoose
   .connect(mongoURL,{ useNewUrlParser: true, useUnifiedTopology: true })
