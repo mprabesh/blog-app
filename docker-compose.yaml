@@ -32,9 +32,9 @@ services:
   backend:
     image: backend:v1
     environment:
-      PROD_PORT: 8081
-      MONGO_URL: mongodb+srv://prabeshmagarrumsan:RcoScWDznHCMgmv6@cluster0.rbjux.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
-      SECRET_KEY: appleisred
+      - PROD_PORT=${PROD_PORT}
+      - MONGO_URL=${MONGO_URL}
+      - SECRET_KEY=${SECRET_KEY}
     restart: always
     networks:
       - app-network
@@ -43,7 +43,7 @@ services:
   frontend:
     image: frontend:v1
     environment:
-      VITE_API_URL: http://proxy/api
+      - VITE_API_URL=${VITE_API_URL}
     ports:
       - "3001:80"
     depends_on:
