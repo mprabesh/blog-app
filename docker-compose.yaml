@@ -1,33 +1,4 @@
-# services:
-#   backend:
-#    image: backend:v1
-#    environment:
-#       PROD_PORT: 8081
-#       MONGO_URL: mongodb+srv://prabeshmagarrumsan:RcoScWDznHCMgmv6@cluster0.rbjux.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
-#       ECRET_KEY: appleisred
-#    restart: always
-#    networks:
-#       - app-network
-
-#   frontend:
-#     image: frontend:v1
-#     environment:
-#       VITE_API_URL: http://backend:8081/api
-#     ports:
-#      - "3001:80"
-#     depends_on:
-#      - backend
-#     restart: always
-#     networks:
-#       - app-network
-
-
-# networks:
-#   app-network:
-
-      
-version: "3.8"
-
+# Docker Compose file for a multi-container application with backend, frontend, and proxy services
 services:
   backend:
     image: backend:v1
