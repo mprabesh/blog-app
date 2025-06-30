@@ -1,34 +1,65 @@
-    # Use an official Node.js runtime as a parent imageFROM node:20-alpine AS builder
+# Multi-stage build for React Frontend (Public Subnet)
+# Stage 1: Build the React application
 FROM node:20-alpine AS builder
-    # Set the working directory in the container
+
+LABEL maintainer="blog-app"
+LABEL service="frontend"
+LABEL tier="public"
+
+# Set working directory
 WORKDIR /app
 
-    # Copy package.json and package-lock.json (if available)
+# Copy package files first for better caching
 COPY package*.json ./
-RUN npm ci --omit=dev
 
+# Install dependencies
+RUN npm ci --silent
 
-    # Install app dependencies
-RUN npm install
+# Copy source code
+COPY src/ ./src/
+COPY index.html ./
+COPY vite.config.js ./
+COPY index.css ./
 
-    # Copy the rest of the app files
-COPY . .
-
-    # Build the app for production
+# Build the application
 RUN npm run build
 
-    # Use a lightweight web server to serve the static files
-FROM nginx:stable-alpine
+# Stage 2: Production nginx server
+FROM nginx:1.25-alpine
 
+# Install security updates and curl for health checks
+RUN apk update && apk upgrade && apk add --no-cache curl
+
+# Create nginx user and group
+RUN addgroup -g 1001 -S nginx-app && \
+    adduser -S nginx-app -u 1001 -G nginx-app
+
+# Remove default nginx content
 RUN rm -rf /usr/share/nginx/html/*
 
-    # Copy built assets from builder stage
+# Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+# Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-    # Expose port 80 for the app
+# Set proper permissions
+RUN chown -R nginx-app:nginx-app /usr/share/nginx/html && \
+    chown -R nginx-app:nginx-app /var/cache/nginx && \
+    chown -R nginx-app:nginx-app /var/log/nginx && \
+    chown -R nginx-app:nginx-app /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && \
+    chown -R nginx-app:nginx-app /var/run/nginx.pid
+
+# Switch to non-root user
+USER nginx-app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:80/ || exit 1
+
+# Expose port
 EXPOSE 80
 
-    # Start nginx
+# Start nginx
 CMD ["nginx", "-g", "daemon off;"]

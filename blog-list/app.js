@@ -31,7 +31,17 @@ app.use(requestLogger);
 if (process.env.NODE_ENV === "test") {
   app.use("/api/testing", testingRouter);
 }
+
+// Health check endpoints
 app.get("/",(req,res)=>{res.send("Server is running")});
+app.get("/api/ping", (req, res) => {
+  res.status(200).json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV 
+  });
+});
+
 app.use("/api/login", loginController);
 app.use("/api/users", userController);
 app.use("/api/blogs", blogsController);
