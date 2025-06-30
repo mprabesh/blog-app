@@ -1,5 +1,27 @@
 import { useState } from "react";
 
+/**
+ * Blog Component
+ *
+ * Displays individual blog post information with expandable details and interactive features.
+ * This component handles the display of blog posts in both collapsed and expanded states.
+ *
+ * Features:
+ * - Toggleable view between summary (title/author) and detailed view
+ * - Like functionality with real-time like count updates
+ * - Delete functionality for blog owners only
+ * - Responsive design with inline styling
+ * - User authorization checks for delete operations
+ *
+ * Props:
+ * @param {Object} blog - Blog object containing title, author, url, likes, user info
+ * @param {Function} handleLikesUpdate - Callback function to update blog likes
+ * @param {Function} handleDelete - Callback function to delete blog post
+ *
+ * State:
+ * @param {boolean} view - Controls whether detailed view is shown or hidden
+ */
+
 const Blog = ({ blog, handleLikesUpdate, handleDelete }) => {
   const [view, setView] = useState(false);
   const blogStyle = {

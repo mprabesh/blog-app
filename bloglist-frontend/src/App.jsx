@@ -1,3 +1,22 @@
+/**
+ * Main Blog Application Component
+ * 
+ * This is the root component of the React blog application that manages:
+ * - User authentication state and login/logout functionality
+ * - Blog posts state and CRUD operations
+ * - Navigation between different views (login, blog list, create blog)
+ * - Global notification system for user feedback
+ * - Local storage management for persistent user sessions
+ * 
+ * Features:
+ * - User registration and login with JWT authentication
+ * - Blog creation, editing, and deletion
+ * - Like/unlike functionality for blog posts
+ * - Responsive design with toggleable forms
+ * - Error handling with user-friendly notifications
+ * - Persistent login state using localStorage
+ */
+
 import { useEffect, useState, useRef } from "react";
 import Blog from "./components/Blog";
 import BlogServices from "./services/blog";

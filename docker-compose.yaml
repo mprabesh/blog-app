@@ -1,32 +1,60 @@
-# Docker Compose file for a multi-container application with backend and frontend services
-services:
-  backend:
-    image: backend:v1
-    environment:
-      - PROD_PORT=${PROD_PORT}
-      - MONGO_URL=${MONGO_URL}
-      - SECRET_KEY=${SECRET_KEY}
-    restart: always
-    networks:
-      - app-network
-    ports:
-      - "8081:8081"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PROD_PORT:-8081}/api/ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+# ===================================================================
+# Docker Compose Configuration for Blog Application
+# ===================================================================
+#
+# This file orchestrates a multi-container blog application with:
+# - Backend API service (Node.js/Express)
+# - Frontend web service (React/nginx)
+# - Shared network for inter-service communication
+# - Health checks for service reliability
+# - Environment variable configuration
+#
+# Usage:
+#   docker-compose up -d     # Start all services in detached mode
+#   docker-compose down      # Stop and remove all services
+#   docker-compose logs -f   # View real-time logs
+#
+# Prerequisites:
+#   - .env file with required environment variables
+#   - Built Docker images (backend:v1, frontend:v1)
+# ===================================================================
 
-  frontend:
-    image: frontend:v1
+services:
+  # Backend API Service
+  # Provides RESTful API for blog operations and user authentication
+  backend:
+    image: backend:v1                    # Pre-built backend Docker image
     environment:
-      - VITE_API_URL=${VITE_API_URL}
+      # Pass environment variables from .env file to container
+      - PROD_PORT=${PROD_PORT}           # Server port (default: 8081)
+      - MONGO_URL=${MONGO_URL}           # MongoDB Atlas connection string
+      - SECRET_KEY=${SECRET_KEY}         # JWT signing secret
+    restart: always                      # Auto-restart on failure
+    networks:
+      - app-network                      # Join application network
     ports:
-      - "3001:80"
+      - "8081:8081"                     # Expose backend API port
+    healthcheck:
+      # Health check endpoint for service monitoring
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PROD_PORT:-8081}/api/ping"]
+      interval: 30s                     # Check every 30 seconds
+      timeout: 10s                      # 10 second timeout per check
+      retries: 3                        # 3 failed checks = unhealthy
+
+  # Frontend Web Service
+  # Serves React application and handles user interface
+  frontend:
+    image: frontend:v1                   # Pre-built frontend Docker image
+    environment:
+      # Frontend configuration
+      - VITE_API_URL=${VITE_API_URL}     # Backend API endpoint URL
+    ports:
+      - "3001:80"                       # Expose frontend on port 3001
     depends_on:
+      # Wait for backend to be healthy before starting frontend
       backend:
-        condition: service_healthy
-    restart: always
+        condition: service_healthy       # Ensures backend is ready
+    restart: always                      # Auto-restart on failure
     networks:
       - app-network
     healthcheck:
