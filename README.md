@@ -1,9 +1,10 @@
 # 📝 Blog Application
 
-A full-stack blog application built with React frontend and Node.js backend, containerized with Docker for easy deployment.
+A modern, full-stack blog application built with React frontend and Node.js backend, featuring containerized deployment with runtime environment variable injection for maximum flexibility across different environments.
 
 ## 🏗️ Architecture
 
+### Main Stack (Docker Compose)
 ```
 ┌─────────────────┐    HTTP API calls    ┌─────────────────┐
 │   Frontend      │ ───────────────────► │    Backend      │
@@ -18,15 +19,28 @@ A full-stack blog application built with React frontend and Node.js backend, con
                                          └─────────────────┘
 ```
 
+### Standalone Frontend (Independent Deployment)
+```
+┌─────────────────┐    HTTP API calls    ┌─────────────────┐
+│   Frontend      │ ───────────────────► │   Remote API    │
+│ (Standalone)    │                      │ (Any Backend)   │
+│   Any Port      │                      │   Any URL       │
+└─────────────────┘                      └─────────────────┘
+```
+
 ## 🚀 Features
 
 - **User Authentication**: Register, login, and JWT-based session management
 - **Blog Management**: Create, read, update, and delete blog posts
 - **Responsive UI**: Modern React interface with responsive design
 - **RESTful API**: Clean API architecture with proper HTTP methods
-- **Containerized**: Docker containers for easy deployment
-- **Testing**: Unit tests for both frontend and backend
+- **Containerized Deployment**: Multiple deployment options:
+  - Full stack with Docker Compose
+  - Standalone frontend for independent deployment
+- **Runtime Environment Injection**: Configure API endpoints at container startup
 - **Production Ready**: Optimized builds with security best practices
+- **Testing**: Comprehensive unit tests and E2E testing
+- **CI/CD Ready**: Docker images perfect for continuous deployment
 
 ## 📁 Project Structure
 
@@ -72,15 +86,19 @@ blog-app/
 │   ├── 📂 cypress/                  # E2E tests
 │   │   └── e2e/
 │   │       └── blog-app.cy.js       # Cypress tests
-│   ├── Dockerfile                   # Frontend container config
-│   ├── nginx.conf                   # Nginx configuration
+│   ├── Dockerfile                   # Main frontend container
+│   ├── Dockerfile.standalone        # Standalone frontend container
+│   ├── docker-compose.frontend.yaml # Standalone deployment config
+│   ├── entrypoint.sh               # Runtime env injection script
+│   ├── run-frontend.sh             # Standalone build & run script
+│   ├── nginx.conf                   # Nginx SPA configuration
 │   ├── vite.config.js               # Vite build config
 │   └── package.json                 # Frontend dependencies
 │
-├── docker-compose.yaml              # Multi-container orchestration
-├── build.sh                        # Automated build script
-├── docker-run.sh                   # Docker run script
+├── docker-compose.yaml              # Main 2-service orchestration
+├── build.sh                        # Streamlined build script
 ├── .env.example                     # Environment template
+├── DOCUMENTATION.md                 # Detailed documentation
 └── README.md                        # This file
 ```
 
@@ -107,8 +125,43 @@ blog-app/
 - **Containerization**: Docker with multi-stage builds
 - **Orchestration**: Docker Compose
 - **Web Server**: Nginx (for frontend static files)
+- **Runtime Configuration**: Environment variable injection at container startup
 - **Process Management**: dumb-init for proper signal handling
 - **Security**: Non-root users, security updates, health checks
+- **CI/CD Ready**: Standalone images perfect for continuous deployment
+
+## ⚙️ Environment Variables
+
+### Backend (.env)
+```bash
+# Server Configuration
+PROD_PORT=8081                # Backend API port
+DEV_PORT=3001                 # Development port
+TEST_PORT=3002               # Test environment port
+
+# Database Configuration
+MONGO_URL=mongodb+srv://...   # MongoDB Atlas connection string
+TEST_MONGO_URL=mongodb+srv://... # Test database URL
+
+# Security
+SECRET_KEY=your-jwt-secret    # JWT signing secret (change in production)
+```
+
+### Frontend (Runtime Injection)
+```bash
+# API Configuration (injected at container startup)
+VITE_API_URL=http://localhost:8081/api  # Backend API endpoint
+
+# Port Configuration (for standalone deployment)
+FRONTEND_PORT=3001           # Frontend port mapping
+NODE_ENV=development         # Environment mode
+```
+
+### Key Features of Environment Configuration:
+- **Runtime Injection**: Frontend API URL can be changed without rebuilding the image
+- **Same Image, Multiple Environments**: Use one Docker image across dev/staging/production
+- **Flexible Deployment**: Frontend can connect to any backend URL
+- **Security**: Sensitive values not baked into images
 
 ## 🚀 Quick Start
 
@@ -132,23 +185,41 @@ cp .env.example .env
 nano .env
 ```
 
-### 3. Docker Compose (Recommended)
+### 3. Choose Your Deployment
+
+#### Option A: Full Stack (Docker Compose)
 ```bash
-# Build and run with Docker Compose
+# Build and run both frontend and backend
 ./build.sh
 
 # Or manually
 docker-compose up -d
 ```
 
+#### Option B: Standalone Frontend Only
+```bash
+cd bloglist-frontend
+
+# Quick start with defaults
+./run-frontend.sh
+
+# Or with custom API URL
+./run-frontend.sh --api-url=https://your-api.com --port=8080
+
+# Or using Docker Compose
+docker-compose -f docker-compose.frontend.yaml up -d
+```
+
 ### 4. Access Application
-- **Frontend**: http://localhost:3001
+- **Frontend**: http://localhost:3001 (or custom port)
 - **Backend API**: http://localhost:8081
 - **API Documentation**: http://localhost:8081/api
 
-## 🐳 Docker Deployment
+## 🐳 Deployment Options
 
-### Using Docker Compose
+### 1. Full Stack Deployment (Docker Compose)
+Perfect for development and integrated environments:
+
 ```bash
 # Build and run all services
 docker-compose up -d
@@ -160,17 +231,52 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### Using Docker Run
-```bash
-# Run with individual containers
-./docker-run.sh
+### 2. Standalone Frontend Deployment
+Perfect for production where backend is hosted separately:
 
-# Or manually
-docker network create blog-app-network
-docker run -d --name blog-app-backend --network blog-app-network \
-  -p 8081:8081 --env-file .env backend:v1
-docker run -d --name blog-app-frontend --network blog-app-network \
-  -p 3001:80 --env-file .env frontend:v1
+```bash
+cd bloglist-frontend
+
+# Using the convenience script
+./run-frontend.sh --api-url=https://api.myapp.com --port=3001
+
+# Using Docker directly
+docker build -f Dockerfile.standalone -t blog-frontend:latest .
+docker run -d -p 3001:80 \
+  -e VITE_API_URL=https://api.myapp.com \
+  blog-frontend:latest
+
+# Using standalone Docker Compose
+docker-compose -f docker-compose.frontend.yaml up -d
+```
+
+### 3. Kubernetes/Cloud Deployment
+The standalone frontend image is perfect for cloud platforms:
+
+```yaml
+# kubernetes-frontend.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blog-frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: blog-frontend
+  template:
+    metadata:
+      labels:
+        app: blog-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: blog-frontend:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: VITE_API_URL
+          value: "https://api.myapp.com"
 ```
 
 ## 🧪 Testing
