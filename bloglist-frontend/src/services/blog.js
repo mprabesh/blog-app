@@ -24,11 +24,12 @@ import axios from "axios";
 /**
  * API Configuration
  * 
- * Set the base URL for all API requests using environment variables.
- * Falls back to localhost if environment variable is not set.
- * This allows for different API endpoints in development and production.
+ * Set the base URL for all API requests using a runtime placeholder.
+ * The placeholder __VITE_API_URL__ gets replaced with the actual API URL
+ * when the container starts, allowing the same Docker image to be used
+ * across different environments (dev, staging, prod) with different API endpoints.
  */
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8081/api";
+const API_BASE_URL = "__VITE_API_URL__";
 
 // Debug log to verify correct API URL is being used
 console.log("API Base URL:", API_BASE_URL);

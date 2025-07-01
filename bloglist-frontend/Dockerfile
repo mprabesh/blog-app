@@ -22,9 +22,10 @@ COPY vite.config.js ./
 COPY index.css ./
 
 # Build the application
+# Note: The API URL will be injected at runtime via entrypoint script
 RUN npm run build
 
-# Stage 2: Production nginx server
+# Stage 2: Production nginx server with runtime environment variable injection
 FROM nginx:1.25-alpine
 
 # Install security updates and curl for health checks
@@ -43,13 +44,18 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Set proper permissions
-RUN chown -R nginx-app:nginx-app /usr/share/nginx/html && \
+# Copy entrypoint script for runtime environment variable injection
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Make entrypoint script executable and set proper permissions
+RUN chmod +x /usr/local/bin/entrypoint.sh && \
+    chown -R nginx-app:nginx-app /usr/share/nginx/html && \
     chown -R nginx-app:nginx-app /var/cache/nginx && \
     chown -R nginx-app:nginx-app /var/log/nginx && \
     chown -R nginx-app:nginx-app /etc/nginx/conf.d && \
     touch /var/run/nginx.pid && \
-    chown -R nginx-app:nginx-app /var/run/nginx.pid
+    chown -R nginx-app:nginx-app /var/run/nginx.pid && \
+    chown nginx-app:nginx-app /usr/local/bin/entrypoint.sh
 
 # Switch to non-root user
 USER nginx-app
@@ -61,5 +67,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 80
 
-# Start nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Use entrypoint script to inject environment variables at runtime
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -23,7 +23,9 @@ services:
   # Backend API Service
   # Provides RESTful API for blog operations and user authentication
   backend:
-    image: backend:v1                    # Pre-built backend Docker image
+    build:
+      context: ./blog-list              # Build context for backend
+      dockerfile: Dockerfile            # Backend Dockerfile
     environment:
       # Pass environment variables from .env file to container
       - PROD_PORT=${PROD_PORT}           # Server port (default: 8081)
@@ -44,10 +46,12 @@ services:
   # Frontend Web Service
   # Serves React application and handles user interface
   frontend:
-    image: frontend:v1                   # Pre-built frontend Docker image
+    build:
+      context: ./bloglist-frontend      # Build context for frontend
+      dockerfile: Dockerfile            # Frontend Dockerfile
     environment:
-      # Frontend configuration
-      - VITE_API_URL=${VITE_API_URL}     # Backend API endpoint URL
+      # Runtime environment variables - injected when container starts
+      - VITE_API_URL=${VITE_API_URL}     # Backend API endpoint URL (runtime)
     ports:
       - "3001:80"                       # Expose frontend on port 3001
     depends_on:

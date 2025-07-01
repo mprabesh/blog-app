@@ -1,0 +1,71 @@
+# ===================================================================
+# Standalone Frontend Docker Compose Configuration
+# ===================================================================
+#
+# This compose file runs only the frontend service independently,
+# perfect for development, testing, or when the backend is hosted
+# elsewhere (different server, cloud service, etc.).
+#
+# Features:
+# - Frontend-only deployment
+# - Runtime environment variable configuration
+# - Easy switching between different API endpoints
+# - Health monitoring included
+#
+# Usage:
+#   docker-compose -f docker-compose.frontend.yaml up -d
+#   docker-compose -f docker-compose.frontend.yaml down
+#   docker-compose -f docker-compose.frontend.yaml logs -f
+# ===================================================================
+
+version: '3.8'
+
+services:
+  # Standalone Frontend Service
+  # Serves React application with configurable API endpoint
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    container_name: blog-frontend-standalone
+    environment:
+      # Runtime environment variables - change these as needed
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8081/api}
+    ports:
+      - "${FRONTEND_PORT:-3001}:80"     # Configurable frontend port
+    restart: unless-stopped             # Auto-restart unless manually stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "service=blog-frontend"
+      - "environment=${NODE_ENV:-development}"
+      - "version=standalone"
+
+# ===================================================================
+# Environment Configuration Examples:
+# ===================================================================
+#
+# Create a .env.frontend file with your configuration:
+#
+# Development:
+#   VITE_API_URL=http://localhost:8081/api
+#   FRONTEND_PORT=3001
+#   NODE_ENV=development
+#
+# Staging:
+#   VITE_API_URL=https://staging-api.myapp.com/api
+#   FRONTEND_PORT=3001
+#   NODE_ENV=staging
+#
+# Production:
+#   VITE_API_URL=https://api.myapp.com/api
+#   FRONTEND_PORT=80
+#   NODE_ENV=production
+#
+# Then run:
+#   docker-compose -f docker-compose.frontend.yaml --env-file .env.frontend up -d
+# ===================================================================

@@ -54,31 +54,21 @@ fi
 source .env
 
 # ===================================================================
-# Docker Image Building Phase
+# Service Building and Deployment Phase
 # ===================================================================
-# Build Docker images for both backend and frontend services.
-# Images are tagged with version numbers for consistent deployment.
+# Build and deploy all services using Docker Compose orchestration.
+# This handles image building, networking, dependencies, and health checks.
 
-echo "📦 Building backend image..."
-# Build Node.js/Express backend API image
-# Uses multi-stage Dockerfile with security optimizations
-docker build -t backend:v1 ./blog-list/
+echo "🐳 Building and starting services with Docker Compose..."
+# Build images and start all services in detached mode (-d)
+# Docker Compose will handle:
+# - Building images with proper build arguments (including VITE_API_URL)
+# - Service dependencies and health checks
+# - Network configuration between services
+docker compose up -d --build
 
-echo "📦 Building frontend image..."
-# Build React frontend image with nginx web server
-# Uses multi-stage build: Node.js for building, nginx for serving
-docker build -t frontend:v1 ./bloglist-frontend/
-
-# ===================================================================
-# Service Deployment Phase
-# ===================================================================
-# Deploy all services using Docker Compose orchestration.
-# This handles networking, dependencies, and health checks.
-
-echo "🐳 Starting services with Docker Compose..."
-# Start all services in detached mode (-d)
-# Docker Compose will handle service dependencies and health checks
-docker compose up -d
+# Note: Frontend environment variables (VITE_*) are processed at build time
+# and baked into the static files. They cannot be changed at runtime.
 
 # ===================================================================
 # Health Check and Verification Phase
