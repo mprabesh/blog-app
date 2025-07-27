@@ -43,7 +43,23 @@ const {
  * - cors(): Enable Cross-Origin Resource Sharing for frontend communication
  */
 app.use(express.json());
-app.use(cors());
+
+// Configure CORS for multi-VM deployment
+app.use(cors({
+  origin: [
+    'http://localhost:3001',           // Local development
+    'http://localhost',                // Local frontend on port 80
+    'http://192.168.148.137',          // Frontend VM on port 80
+    'http://192.168.148.139',          // Another frontend VM on port 80
+    /^http:\/\/192\.168\.148\.\d+$/, // Allow any IP in the 192.168.148.x range on port 80
+    /^http:\/\/192\.168\.148\.\d+:3001$/, // Allow any IP in the 192.168.148.x range on port 3001
+    /^http:\/\/192\.168\.248\.\d+$/,  // Allow any IP in the 192.168.248.x range on port 80
+    /^http:\/\/192\.168\.248\.\d+:8081$/ // Allow backend health checks
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 /**
  * Database Connection
