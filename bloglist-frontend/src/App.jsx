@@ -71,7 +71,7 @@ const App = () => {
       })
       .catch((err) => {
         setNotificationMessage({
-          message: err.response.data.error,
+          message: err.response?.data?.error || err.message || "Network error occurred",
           messageTypeError: true,
         });
         setTimeout(() => {
@@ -104,13 +104,13 @@ const App = () => {
         }, 3000);
       })
       .catch((err) => {
-        if (err.response.data.error === "jwt expired") {
+        if (err.response?.data?.error === "jwt expired") {
           setuser(null);
           window.localStorage.removeItem("userData");
         }
         setNotificationMessage({
           messageTypeError: true,
-          message: err.response.data.error,
+          message: err.response?.data?.error || err.message || "Network error occurred",
         });
         setTimeout(() => {
           setNotificationMessage({
@@ -137,13 +137,13 @@ const App = () => {
         );
       })
       .catch((err) => {
-        if (err.response.data.error === "jwt expired") {
+        if (err.response?.data?.error === "jwt expired") {
           setuser(null);
           window.localStorage.removeItem("userData");
         }
         setNotificationMessage({
           messageTypeError: true,
-          message: err.response.data.error,
+          message: err.response?.data?.error || err.message || "Network error occurred",
         });
         setTimeout(() => {
           setNotificationMessage({
@@ -174,13 +174,13 @@ const App = () => {
           }, 3000);
         })
         .catch((err) => {
-          if (err.response.data.error === "jwt expired") {
+          if (err.response?.data?.error === "jwt expired") {
             setuser(null);
             window.localStorage.removeItem("userData");
           }
           setNotificationMessage({
             messageTypeError: true,
-            message: err.response.data.error,
+            message: err.response?.data?.error || err.message || "Network error occurred",
           });
           setTimeout(() => {
             setNotificationMessage({

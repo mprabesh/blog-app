@@ -21,8 +21,10 @@ echo "Injecting runtime environment variables..."
 
 # Default values
 VITE_API_URL=${VITE_API_URL:-"http://localhost:8081/api"}
+BACKEND_URL=${BACKEND_URL:-"http://localhost:8081"}
 
 echo "API URL: $VITE_API_URL"
+echo "Backend URL: $BACKEND_URL"
 
 # Find all JavaScript files in the built assets and replace the placeholder
 # We use a placeholder __VITE_API_URL__ that gets replaced at runtime
@@ -30,6 +32,9 @@ find /usr/share/nginx/html -name "*.js" -type f -exec sed -i "s|__VITE_API_URL__
 
 # Also update any potential occurrences in HTML files
 find /usr/share/nginx/html -name "*.html" -type f -exec sed -i "s|__VITE_API_URL__|$VITE_API_URL|g" {} \;
+
+# Replace backend URL in nginx configuration
+sed -i "s|__BACKEND_URL__|$BACKEND_URL|g" /etc/nginx/conf.d/default.conf
 
 echo "Environment variables injected successfully"
 echo "Starting nginx..."
