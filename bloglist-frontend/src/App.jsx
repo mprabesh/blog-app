@@ -21,6 +21,7 @@ import { useEffect, useState, useRef } from "react";
 import Blog from "./components/Blog";
 import BlogServices from "./services/blog";
 import LoginForm from "./components/LoginForm";
+import RegisterForm from "./components/RegisterForm";
 import AddBlogForm from "./components/AddBlogForm";
 import Notification from "./components/Notification";
 import Toggleable from "./components/Toggleable";
@@ -28,6 +29,7 @@ import Toggleable from "./components/Toggleable";
 const App = () => {
   const [blogs, setBlogs] = useState([]);
   const [user, setuser] = useState(null);
+  const [isRegistering, setIsRegistering] = useState(false);
   const [userCredentials, setuserCredentials] = useState({
     username: "",
     password: "",
@@ -85,6 +87,59 @@ const App = () => {
           password: "",
         });
       });
+  };
+
+  const handleRegister = async (userData) => {
+    try {
+      const result = await BlogServices.register(userData);
+      
+      // Show success message
+      setNotificationMessage({
+        message: `Account created successfully! Welcome ${result.data.name}!`,
+        messageTypeError: false,
+      });
+
+      // Clear notification after 3 seconds
+      setTimeout(() => {
+        setNotificationMessage({
+          message: "",
+          messageTypeError: false,
+        });
+      }, 3000);
+
+      // Switch to login form after successful registration
+      setIsRegistering(false);
+      
+      // Pre-fill login form with registered username
+      setuserCredentials({
+        username: userData.username,
+        password: "",
+      });
+
+    } catch (err) {
+      console.error("Registration error:", err);
+      setNotificationMessage({
+        message: err.response?.data?.error || err.message || "Registration failed. Please try again.",
+        messageTypeError: true,
+      });
+
+      setTimeout(() => {
+        setNotificationMessage({
+          message: "",
+          messageTypeError: false,
+        });
+      }, 5000);
+    }
+  };
+
+  const switchToRegister = () => {
+    setIsRegistering(true);
+    setNotificationMessage({ message: "", messageTypeError: false });
+  };
+
+  const switchToLogin = () => {
+    setIsRegistering(false);
+    setNotificationMessage({ message: "", messageTypeError: false });
   };
 
   const createBlog = (newBlog) => {
@@ -205,12 +260,22 @@ const App = () => {
             <h1 className="page-title">Welcome to BlogSpace</h1>
             <p className="page-subtitle">Share your thoughts with the world</p>
           </div>
-          <LoginForm
-            handleLogin={handleLogin}
-            userCredentials={userCredentials}
-            setuserCredentials={setuserCredentials}
-            notificationMessage={notificationMessage}
-          />
+          
+          {isRegistering ? (
+            <RegisterForm
+              handleRegister={handleRegister}
+              notificationMessage={notificationMessage}
+              switchToLogin={switchToLogin}
+            />
+          ) : (
+            <LoginForm
+              handleLogin={handleLogin}
+              userCredentials={userCredentials}
+              setuserCredentials={setuserCredentials}
+              notificationMessage={notificationMessage}
+              switchToRegister={switchToRegister}
+            />
+          )}
         </div>
       ) : (
         <>

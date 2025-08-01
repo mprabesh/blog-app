@@ -75,6 +75,22 @@ export const login = ({ username, password }) => {
 };
 
 /**
+ * User Registration
+ * 
+ * Creates a new user account with the provided credentials.
+ * This is a public endpoint that doesn't require authentication.
+ * 
+ * @param {Object} userData - User registration data
+ * @param {string} userData.username - Desired username (must be unique)
+ * @param {string} userData.name - User's full name
+ * @param {string} userData.password - User's password (min 3 characters)
+ * @returns {Promise} Axios promise with created user object
+ */
+export const register = ({ username, name, password }) => {
+  return axios.post(`${API_BASE_URL}/users`, { username, name, password });
+};
+
+/**
  * Add New Blog Post
  * 
  * Creates a new blog post. Requires authentication.
@@ -127,4 +143,4 @@ export const deleteBlog = (id) => {
   });
 };
 
-export default { getAll, login, addBlog, updateLike, deleteBlog };
+export default { getAll, login, register, addBlog, updateLike, deleteBlog };

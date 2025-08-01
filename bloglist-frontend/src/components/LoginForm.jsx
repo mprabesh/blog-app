@@ -13,6 +13,7 @@ const LoginForm = ({
   userCredentials,
   setuserCredentials,
   notificationMessage,
+  switchToRegister,
 }) => {
   return (
     <div className="form-container animate-slideUp">
@@ -68,9 +69,15 @@ const LoginForm = ({
       </form>
       
       <div className="text-center mt-6">
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-gray-600 mb-3">
           Welcome to BlogSpace - Share your stories with the world
         </p>
+        <button
+          onClick={switchToRegister}
+          className="text-primary-600 hover:text-primary-700 font-medium text-sm transition-colors"
+        >
+          Don't have an account? Create one
+        </button>
       </div>
     </div>
   );
@@ -81,6 +88,7 @@ LoginForm.propTypes = {
   userCredentials: PropTypes.object.isRequired,
   setuserCredentials: PropTypes.func.isRequired,
   notificationMessage: PropTypes.object.isRequired,
+  switchToRegister: PropTypes.func.isRequired,
 };
 
 export default LoginForm;
