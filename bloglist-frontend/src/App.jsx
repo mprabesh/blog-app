@@ -198,35 +198,82 @@ const App = () => {
   };
 
   return (
-    <div>
+    <div className="app-container">
       {user === null ? (
-        <LoginForm
-          handleLogin={handleLogin}
-          userCredentials={userCredentials}
-          setuserCredentials={setuserCredentials}
-          notificationMessage={notificationMessage}
-        />
-      ) : (
-        <div>
-          <h2>Blogs</h2>
-          <Notification notificationMessage={notificationMessage} />
-          {user.name} logged in <button id="logout-btn" onClick={logout}>logout</button>
-          <Toggleable buttonLabel="add blog" ref={blogFormRef}>
-            <AddBlogForm createBlog={createBlog} />
-          </Toggleable>
-          <div className="blog-div">
-            {blogs
-              .sort((val1, val2) => val2.likes - val1.likes)
-              .map((blog) => (
-                <Blog
-                  key={blog.id}
-                  blog={blog}
-                  handleLikesUpdate={handleLikesUpdate}
-                  handleDelete={handleDelete}
-                />
-              ))}
+        <div className="main-content">
+          <div className="text-center mb-8">
+            <h1 className="page-title">Welcome to BlogSpace</h1>
+            <p className="page-subtitle">Share your thoughts with the world</p>
           </div>
+          <LoginForm
+            handleLogin={handleLogin}
+            userCredentials={userCredentials}
+            setuserCredentials={setuserCredentials}
+            notificationMessage={notificationMessage}
+          />
         </div>
+      ) : (
+        <>
+          <header className="app-header">
+            <div className="header-content">
+              <a href="#" className="app-logo">
+                BlogSpace
+              </a>
+              <div className="user-menu">
+                <div className="user-info">
+                  <div className="user-avatar">
+                    {user.name?.charAt(0).toUpperCase() || user.username?.charAt(0).toUpperCase()}
+                  </div>
+                  <span>Welcome, {user.name}</span>
+                </div>
+                <button 
+                  id="logout-btn" 
+                  onClick={logout}
+                  className="btn btn-secondary btn-sm"
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="main-content">
+            <Notification notificationMessage={notificationMessage} />
+            
+            <div className="mb-8">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h1 className="section-title">Latest Blog Posts</h1>
+                  <p className="text-gray-600">Discover amazing stories from our community</p>
+                </div>
+                <Toggleable buttonLabel="Create New Post" ref={blogFormRef}>
+                  <AddBlogForm createBlog={createBlog} />
+                </Toggleable>
+              </div>
+
+              <div className="blogs-grid">
+                {blogs
+                  .sort((val1, val2) => val2.likes - val1.likes)
+                  .map((blog) => (
+                    <Blog
+                      key={blog.id}
+                      blog={blog}
+                      handleLikesUpdate={handleLikesUpdate}
+                      handleDelete={handleDelete}
+                    />
+                  ))}
+              </div>
+
+              {blogs.length === 0 && (
+                <div className="text-center p-8">
+                  <div className="text-6xl mb-4">📝</div>
+                  <h3 className="text-xl font-semibold text-gray-700 mb-2">No blogs yet</h3>
+                  <p className="text-gray-500">Be the first to share your story!</p>
+                </div>
+              )}
+            </div>
+          </main>
+        </>
       )}
     </div>
   );

@@ -1,6 +1,13 @@
 import Notification from "./Notification";
 import PropTypes from "prop-types";
 
+/**
+ * LoginForm Component
+ * 
+ * Modern, professional login form with improved UX and styling.
+ * Features form validation, loading states, and responsive design.
+ */
+
 const LoginForm = ({
   handleLogin,
   userCredentials,
@@ -8,32 +15,63 @@ const LoginForm = ({
   notificationMessage,
 }) => {
   return (
-    <div>
-      <h2>login to application</h2>
+    <div className="form-container animate-slideUp">
+      <div className="form-title">Sign In</div>
+      
       <Notification notificationMessage={notificationMessage} />
-      <form onSubmit={handleLogin}>
-        username{" "}
-        <input
-          id="username"
-          type="text"
-          value={userCredentials.username}
-          onChange={(e) =>
-            setuserCredentials({ ...userCredentials, username: e.target.value })
-          }
-        />
-        <br />
-        password{" "}
-        <input
-          id="password"
-          type="password"
-          value={userCredentials.password}
-          onChange={(e) =>
-            setuserCredentials({ ...userCredentials, password: e.target.value })
-          }
-        />
-        <br />
-        <button id="login-btn">login</button>
+      
+      <form onSubmit={handleLogin} className="space-y-4">
+        <div className="form-group">
+          <label htmlFor="username" className="form-label">
+            Username
+          </label>
+          <input
+            id="username"
+            type="text"
+            className="form-input"
+            placeholder="Enter your username"
+            value={userCredentials.username}
+            onChange={(e) =>
+              setuserCredentials({ ...userCredentials, username: e.target.value })
+            }
+            required
+            autoComplete="username"
+          />
+        </div>
+        
+        <div className="form-group">
+          <label htmlFor="password" className="form-label">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            className="form-input"
+            placeholder="Enter your password"
+            value={userCredentials.password}
+            onChange={(e) =>
+              setuserCredentials({ ...userCredentials, password: e.target.value })
+            }
+            required
+            autoComplete="current-password"
+          />
+        </div>
+        
+        <button 
+          id="login-btn"
+          type="submit"
+          className="btn btn-primary btn-lg btn-full"
+          disabled={!userCredentials.username || !userCredentials.password}
+        >
+          Sign In
+        </button>
       </form>
+      
+      <div className="text-center mt-6">
+        <p className="text-sm text-gray-600">
+          Welcome to BlogSpace - Share your stories with the world
+        </p>
+      </div>
     </div>
   );
 };
