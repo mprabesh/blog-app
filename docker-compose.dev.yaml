@@ -1,0 +1,87 @@
+# ===================================================================
+# Development Docker Compose Configuration
+# ===================================================================
+#
+# This configuration provides a complete local development environment with:
+# - Backend API service (Node.js/Express)
+# - Frontend web service (React/Vite)
+# - Local MongoDB database (no Atlas dependency)
+# - Shared network for inter-service communication
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yaml up -d
+#   docker-compose -f docker-compose.dev.yaml down
+#
+# Benefits:
+# - No internet dependency
+# - No IP whitelist issues
+# - Faster development iteration
+# - Consistent development environment
+# ===================================================================
+
+services:
+  # Local MongoDB Database
+  mongodb:
+    image: mongo:7-alpine
+    container_name: blog-mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: secure-password
+      MONGO_INITDB_DATABASE: bloglist
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - app-network
+
+  # Backend API Service
+  backend:
+    build:
+      context: ./blog-list
+      dockerfile: Dockerfile
+    container_name: blog-backend
+    environment:
+      - NODE_ENV=development
+      - PROD_PORT=8081
+      - MONGO_URL=mongodb://admin:secure-password@mongodb:27017/bloglist?authSource=admin
+      - SECRET_KEY=development-secret-key-change-in-production
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongodb
+    volumes:
+      - ./blog-list:/usr/src/app
+      - /usr/src/app/node_modules
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # Frontend Web Service
+  frontend:
+    build:
+      context: ./bloglist-frontend
+      dockerfile: Dockerfile
+    container_name: blog-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8081/api
+      - BACKEND_URL=http://backend:8081
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./bloglist-frontend/src:/app/src
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+    driver: local
