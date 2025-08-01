@@ -24,14 +24,27 @@ import axios from "axios";
 /**
  * API Configuration
  * 
- * Set the base URL for all API requests using a runtime placeholder.
+ * Set the base URL for all API requests with environment-aware configuration.
+ * This supports both development and production deployment patterns:
+ * 
+ * Development: Uses Vite environment variables (import.meta.env.VITE_API_URL)
+ * Production: Uses runtime placeholder replacement (__VITE_API_URL__)
+ * 
  * The placeholder __VITE_API_URL__ gets replaced with the actual API URL
  * when the container starts, allowing the same Docker image to be used
  * across different environments (dev, staging, prod) with different API endpoints.
  */
-const API_BASE_URL = "__VITE_API_URL__";
+
+// Check if we're in development mode or if the placeholder hasn't been replaced
+const isDevelopment = import.meta.env.DEV;
+const placeholderUrl = "__VITE_API_URL__";
+
+const API_BASE_URL = isDevelopment 
+  ? (import.meta.env.VITE_API_URL || "http://localhost:3003/api")
+  : (placeholderUrl.startsWith("__") ? "http://localhost:8081/api" : placeholderUrl);
 
 // Debug log to verify correct API URL is being used
+console.log("Environment:", isDevelopment ? "Development" : "Production");
 console.log("API Base URL:", API_BASE_URL);
 
 /**
