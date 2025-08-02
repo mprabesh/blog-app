@@ -20,6 +20,24 @@
 # ===================================================================
 
 services:
+  # Redis Cache Service
+  # High-performance in-memory cache for blog data and user sessions
+  redis:
+    image: redis:7-alpine               # Lightweight Redis Alpine image
+    restart: always                     # Auto-restart on failure
+    ports:
+      - "6379:6379"                    # Expose Redis port
+    networks:
+      - app-network                     # Join application network
+    volumes:
+      - redis_data:/data               # Persistent Redis data storage
+    command: redis-server --appendonly yes  # Enable persistence
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]     # Redis health check
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # Backend API Service
   # Provides RESTful API for blog operations and user authentication
   backend:
@@ -31,11 +49,16 @@ services:
       - PROD_PORT=${PROD_PORT}           # Server port (default: 8081)
       - MONGO_URL=${MONGO_URL}           # MongoDB Atlas connection string
       - SECRET_KEY=${SECRET_KEY}         # JWT signing secret
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}  # Redis connection string
     restart: always                      # Auto-restart on failure
     networks:
       - app-network                      # Join application network
     ports:
       - "8081:8081"                     # Expose backend API port
+    depends_on:
+      # Wait for Redis to be ready before starting backend
+      redis:
+        condition: service_healthy       # Ensures Redis is available
     healthcheck:
       # Health check endpoint for service monitoring
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:${PROD_PORT:-8081}/api/ping"]
@@ -69,3 +92,7 @@ services:
 
 networks:
   app-network:
+
+volumes:
+  redis_data:
+    driver: local
