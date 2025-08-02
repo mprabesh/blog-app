@@ -28,6 +28,7 @@ const blogRoute = require("express").Router();
 const Blog = require("../models/blogs");
 const User = require("../models/user");
 const { userExtractor, tokenExtractor } = require("../utils/middleware");
+const { blogCache, blogInvalidation } = require("../utils/cacheMiddleware");
 
 /**
  * GET /api/blogs
@@ -36,13 +37,14 @@ const { userExtractor, tokenExtractor } = require("../utils/middleware");
  * This is a public endpoint that doesn't require authentication.
  * 
  * Features:
+ * - Cached for 5 minutes to improve performance
  * - Populates user information (username, name) for each blog
  * - Returns complete list of blogs with author details
  * - Handles database errors gracefully
  * 
  * Response: Array of blog objects with populated user data
  */
-blogRoute.get("/", async (req, res, next) => {
+blogRoute.get("/", blogCache.list, async (req, res, next) => {
   try {
     const response = await Blog.find({}).populate("user", {
       username: 1,  // Include username in response
@@ -55,10 +57,13 @@ blogRoute.get("/", async (req, res, next) => {
 });
 
 // Route to get a specific blog post by ID
-blogRoute.get("/:id", async (req, res, next) => {
+blogRoute.get("/:id", blogCache.single, async (req, res, next) => {
   const myId = req.params.id;
   try {
-    const response = await Blog.findById(myId);
+    const response = await Blog.findById(myId).populate("user", {
+      username: 1,
+      name: 1,
+    });
     res.status(200).json(response);
   } catch (err) {
     next(err);
@@ -66,7 +71,7 @@ blogRoute.get("/:id", async (req, res, next) => {
 });
 
 // Route to create a new blog post
-blogRoute.post("/", tokenExtractor, userExtractor, async (req, res, next) => {
+blogRoute.post("/", tokenExtractor, userExtractor, blogInvalidation.all, async (req, res, next) => {
   const tokenUser = req.user;
   // Initialize likes to 0 if not provided
   if (!Object.keys(req.body).includes("likes")) {
@@ -94,6 +99,7 @@ blogRoute.delete(
   "/:id",
   tokenExtractor,
   userExtractor,
+  blogInvalidation.all,
   async (req, res, next) => {
     const myID = req.params.id;
     const tokenUser = req.user;
@@ -114,7 +120,7 @@ blogRoute.delete(
 );
 
 // Route to update a blog post
-blogRoute.put("/:id", tokenExtractor, userExtractor, async (req, res, next) => {
+blogRoute.put("/:id", tokenExtractor, userExtractor, blogInvalidation.all, async (req, res, next) => {
   const myId = req.params.id;
   const myUpdatedObj = req.body;
   try {

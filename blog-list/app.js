@@ -29,6 +29,7 @@ const testingRouter = require("./controllers/testing");
 
 // Import configuration and middleware
 const { mongoURL } = require("./utils/config");
+const { redisClient } = require("./utils/redis");
 const {
   errorHandler,
   requestLogger,
@@ -74,23 +75,28 @@ app.use(cors({
 }));
 
 /**
- * Database Connection
+ * Database and Cache Connection
  * 
- * Connect to MongoDB Atlas using Mongoose ODM.
- * The connection URL is loaded from environment variables for security.
+ * Connect to MongoDB Atlas using Mongoose ODM and initialize Redis cache.
+ * Both connections are loaded from environment variables for security.
  * 
  * Configuration:
- * - strictQuery: false - Allows flexible query syntax
- * - useNewUrlParser: true - Uses new MongoDB connection string parser
- * - useUnifiedTopology: true - Uses new Server Discover and Monitoring engine
+ * - MongoDB: strictQuery: false - Allows flexible query syntax
+ * - Redis: Automatic reconnection and error handling
  */
 mongoose.set("strictQuery", false);
 mongoose
   .connect(mongoURL,{ useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => {
-    info("Connected to DB successfully!!");
+    info("Connected to MongoDB successfully!!");
   })
   .catch((err) => info(err));
+
+// Initialize Redis connection
+redisClient.connect().catch(err => {
+  info("Redis connection failed:", err.message);
+  info("Application will continue without caching");
+});
 
 /**
  * Request Logging Middleware
