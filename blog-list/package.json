@@ -6,6 +6,9 @@
   "scripts": {
     "lint": "eslint . --ext .js",
     "test": "NODE_ENV=test jest --verbose --detectOpenHandles",
+    "test:redis": "NODE_ENV=test REDIS_URL=redis://localhost:6379 jest --testPathPattern=redis --verbose --detectOpenHandles",
+    "test:cache": "NODE_ENV=test REDIS_URL=redis://localhost:6379 jest --testPathPattern=cache --verbose --detectOpenHandles",
+    "test:all": "NODE_ENV=test REDIS_URL=redis://localhost:6379 jest --verbose --detectOpenHandles",
     "start:dev": "NODE_ENV=development nodemon index.js",
     "start:prod": "NODE_ENV=production node index.js",
     "start:test": "NODE_ENV=test node index.js"
@@ -27,9 +30,5 @@
     "jest": "^29.6.2",
     "nodemon": "^3.0.1",
     "supertest": "^6.3.3"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "globalTeardown": "./tests/teardown.js"
   }
 }

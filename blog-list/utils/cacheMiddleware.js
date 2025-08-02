@@ -13,85 +13,167 @@
  * - Support for different cache strategies
  */
 
-const { cache } = require('../utils/redis');
-const logger = require('../utils/logger');
+const { cache } = require('./redis');
+const logger = require('./logger');
 
 /**
- * Cache Response Middleware
+ * Cache response middleware with enhanced error handling
  * 
- * Middleware to cache GET request responses and serve cached data
- * for subsequent identical requests within the TTL period.
- * 
- * @param {number} ttl - Time to live in seconds (default: 300 = 5 minutes)
- * @param {string} keyPrefix - Prefix for cache keys (default: 'api')
- * @returns {Function} Express middleware function
+ * @param {Object} options - Caching options
+ * @param {string} options.keyGenerator - Function to generate cache key
+ * @param {number} options.ttl - Time to live in seconds
+ * @param {boolean} options.skipCache - Skip caching for this request
  */
-const cacheResponse = (ttl = 300, keyPrefix = 'api') => {
+const cacheResponse = (options = {}) => {
+  const {
+    keyGenerator = (req) => `api:${req.method}:${req.originalUrl}`,
+    ttl = 300, // 5 minutes default
+    skipCache = false
+  } = options;
+
   return async (req, res, next) => {
-    // Only cache GET requests
-    if (req.method !== 'GET') {
+    // Skip caching for non-GET requests or when explicitly disabled
+    if (req.method !== 'GET' || skipCache) {
       return next();
     }
 
     try {
-      // Generate cache key from request path and query parameters
-      const cacheKey = generateCacheKey(req, keyPrefix);
-      
-      // Try to get cached response
+      const cacheKey = keyGenerator(req);
+      logger.debug(`Checking cache for key: ${cacheKey}`);
+
+      // Try to get from cache
       const cachedData = await cache.get(cacheKey);
       
       if (cachedData) {
-        logger.info(`📖 Cache hit: ${cacheKey}`);
+        logger.debug(`Cache hit for key: ${cacheKey}`);
+        // Add cache headers
+        res.set({
+          'X-Cache': 'HIT',
+          'X-Cache-Key': cacheKey,
+          'Cache-Control': `public, max-age=${ttl}`
+        });
         return res.json(cachedData);
       }
 
-      // Cache miss - continue to route handler
-      logger.debug(`📭 Cache miss: ${cacheKey}`);
+      logger.debug(`Cache miss for key: ${cacheKey}`);
+      
+      // Store original res.json method
+      const originalJson = res.json.bind(res);
       
       // Override res.json to cache the response
-      const originalJson = res.json.bind(res);
       res.json = function(data) {
-        // Cache the response data
-        cache.set(cacheKey, data, ttl).catch(err => {
-          logger.error('❌ Cache set error:', err.message);
-        });
+        // Only cache successful responses
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          // Cache asynchronously to avoid blocking response
+          setImmediate(async () => {
+            try {
+              await cache.set(cacheKey, data, ttl);
+              logger.debug(`Response cached with key: ${cacheKey}`);
+            } catch (error) {
+              logger.error(`Failed to cache response for key ${cacheKey}:`, error.message);
+            }
+          });
+          
+          // Add cache headers
+          res.set({
+            'X-Cache': 'MISS',
+            'X-Cache-Key': cacheKey,
+            'Cache-Control': `public, max-age=${ttl}`
+          });
+        } else {
+          logger.debug(`Skipping cache for non-success response: ${res.statusCode}`);
+        }
         
-        // Send the response
         return originalJson(data);
       };
 
       next();
+
     } catch (error) {
-      logger.error('❌ Cache middleware error:', error.message);
-      next(); // Continue without caching on error
+      logger.error('Cache middleware error:', error.message);
+      // Continue without caching if there's an error
+      res.set('X-Cache', 'ERROR');
+      next();
     }
   };
 };
 
 /**
- * Cache Invalidation Middleware
+ * Cache invalidation middleware with enhanced error handling and safety
  * 
- * Middleware to invalidate cache entries when data is modified.
- * Used on POST, PUT, DELETE requests to ensure cache consistency.
- * 
- * @param {string|Array} patterns - Cache key patterns to invalidate
- * @returns {Function} Express middleware function
+ * @param {string|string[]|Function} patterns - Cache patterns to invalidate
  */
 const invalidateCache = (patterns) => {
   return async (req, res, next) => {
-    // Store patterns to invalidate after successful response
-    res.locals.cachePatterns = Array.isArray(patterns) ? patterns : [patterns];
-    
-    // Override res.json to invalidate cache after successful response
+    // Store original response methods
     const originalJson = res.json.bind(res);
-    res.json = function(data) {
-      // Only invalidate cache for successful responses
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        invalidateCachePatterns(res.locals.cachePatterns);
+    const originalSend = res.send.bind(res);
+    const originalEnd = res.end.bind(res);
+
+    // Create a wrapper function for cache invalidation
+    const performInvalidation = async () => {
+      try {
+        let patternsToInvalidate = [];
+        
+        // Handle different pattern types
+        if (typeof patterns === 'function') {
+          patternsToInvalidate = patterns(req, res);
+        } else if (Array.isArray(patterns)) {
+          patternsToInvalidate = patterns;
+        } else if (typeof patterns === 'string') {
+          patternsToInvalidate = [patterns];
+        }
+
+        // Ensure patterns is an array
+        if (!Array.isArray(patternsToInvalidate)) {
+          patternsToInvalidate = [patternsToInvalidate];
+        }
+
+        // Invalidate each pattern
+        const invalidationPromises = patternsToInvalidate.map(async (pattern) => {
+          try {
+            const deletedCount = await cache.clearPattern(pattern);
+            if (deletedCount > 0) {
+              logger.info(`Cache invalidated: ${deletedCount} keys for pattern '${pattern}'`);
+            }
+            return { pattern, deletedCount, success: true };
+          } catch (error) {
+            logger.error(`Failed to invalidate cache pattern '${pattern}':`, error.message);
+            return { pattern, error: error.message, success: false };
+          }
+        });
+
+        const results = await Promise.allSettled(invalidationPromises);
+        const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        const failed = results.length - successful;
+
+        if (failed > 0) {
+          logger.warn(`Cache invalidation completed with ${failed} failures out of ${results.length} patterns`);
+        } else if (successful > 0) {
+          logger.debug(`Cache invalidation successful for ${successful} patterns`);
+        }
+
+      } catch (error) {
+        logger.error('Cache invalidation error:', error.message);
       }
-      
-      return originalJson(data);
     };
+
+    // Override response methods to trigger invalidation on successful responses
+    const wrapResponse = (originalMethod, methodName) => {
+      return function(...args) {
+        // Check if this is a successful response (2xx status codes)
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          // Perform invalidation asynchronously to avoid blocking response
+          setImmediate(performInvalidation);
+        }
+        
+        return originalMethod.apply(this, args);
+      };
+    };
+
+    res.json = wrapResponse(originalJson, 'json');
+    res.send = wrapResponse(originalSend, 'send');
+    res.end = wrapResponse(originalEnd, 'end');
 
     next();
   };

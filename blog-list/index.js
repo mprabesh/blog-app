@@ -65,17 +65,3 @@ const gracefulShutdown = async (signal) => {
 // Handle shutdown signals
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-    try {
-      await redisClient.disconnect();
-      info('✅ Graceful shutdown completed');
-    } catch (error) {
-      info('❌ Error during Redis shutdown:', error.message);
-    }
-    
-    process.exit(0);
-  });
-};
-
-// Listen for shutdown signals
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));

@@ -26,6 +26,7 @@ const blogsController = require("./controllers/blogs");
 const userController = require("./controllers/user");
 const loginController = require("./controllers/login");
 const testingRouter = require("./controllers/testing");
+const healthRouter = require("./controllers/health-router");
 
 // Import configuration and middleware
 const { mongoURL } = require("./utils/config");
@@ -92,11 +93,24 @@ mongoose
   })
   .catch((err) => info(err));
 
-// Initialize Redis connection
-redisClient.connect().catch(err => {
-  info("Redis connection failed:", err.message);
-  info("Application will continue without caching");
-});
+// Initialize Redis connection with enhanced error handling
+const initializeRedis = async () => {
+  try {
+    info("Initializing Redis connection...");
+    const connected = await redisClient.connect();
+    
+    if (connected) {
+      info("✅ Redis initialized successfully");
+    } else {
+      info("⚠️ Redis connection failed, continuing without cache");
+    }
+  } catch (error) {
+    info("❌ Redis initialization error:", error.message);
+    info("⚠️ Application will continue without Redis caching");
+  }
+};
+
+initializeRedis();
 
 /**
  * Request Logging Middleware
@@ -121,11 +135,8 @@ if (process.env.NODE_ENV === "test") {
  * 
  * Provide endpoints for monitoring service health and status.
  * Used by Docker health checks and load balancers.
- * 
- * Routes:
- * - GET / : Basic server status
- * - GET /api/ping : Detailed health information with timestamp
  */
+app.use('/health', healthRouter);
 app.get("/",(req,res)=>{res.send("Server is running")});
 app.get("/api/ping", (req, res) => {
   res.status(200).json({ 
@@ -163,6 +174,49 @@ app.use("/api/blogs", blogsController);
 app.use(unknownEndpoint);
 
 app.use(errorHandler);
+
+/**
+ * Graceful Shutdown Handling
+ * 
+ * Handle process termination signals and clean up resources properly.
+ * This ensures database connections are closed and cache is cleared.
+ */
+const gracefulShutdown = async (signal) => {
+  info(`Received ${signal}, starting graceful shutdown...`);
+  
+  try {
+    // Close Redis connection
+    if (redisClient) {
+      await redisClient.disconnect();
+      info('✅ Redis connection closed gracefully');
+    }
+    
+    // Close MongoDB connection
+    await mongoose.connection.close();
+    info('✅ MongoDB connection closed gracefully');
+    
+    info('✅ Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    info('❌ Error during graceful shutdown:', error.message);
+    process.exit(1);
+  }
+};
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions and unhandled rejections
+process.on('uncaughtException', (error) => {
+  info('Uncaught Exception:', error);
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  info('Unhandled Rejection at:', promise, 'reason:', reason);
+  gracefulShutdown('unhandledRejection');
+});
 
 // Export the configured Express application
 module.exports = app;

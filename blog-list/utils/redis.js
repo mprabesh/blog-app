@@ -23,6 +23,11 @@ class RedisClient {
     this.retryAttempts = 0;
     this.maxRetries = 5;
     this.retryDelay = 1000; // 1 second
+    this.circuitBreakerFailures = 0;
+    this.circuitBreakerThreshold = 5;
+    this.circuitBreakerTimeout = 30000; // 30 seconds
+    this.circuitBreakerLastFailure = null;
+    this.isCircuitBreakerOpen = false;
   }
 
   /**
@@ -31,56 +36,135 @@ class RedisClient {
    * Creates and configures Redis client with environment-based settings.
    * Includes automatic retry logic and error handling.
    */
+  // Circuit breaker check
+  isCircuitBreakerTripped() {
+    if (!this.isCircuitBreakerOpen) return false;
+    
+    // Check if circuit breaker should be reset
+    if (Date.now() - this.circuitBreakerLastFailure > this.circuitBreakerTimeout) {
+      logger.info('Circuit breaker timeout expired, attempting to reset');
+      this.isCircuitBreakerOpen = false;
+      this.circuitBreakerFailures = 0;
+      return false;
+    }
+    
+    return true;
+  }
+
+  // Record circuit breaker failure
+  recordFailure() {
+    this.circuitBreakerFailures++;
+    this.circuitBreakerLastFailure = Date.now();
+    
+    if (this.circuitBreakerFailures >= this.circuitBreakerThreshold) {
+      this.isCircuitBreakerOpen = true;
+      logger.warn(`Redis circuit breaker opened after ${this.circuitBreakerFailures} failures`);
+    }
+  }
+
+  // Reset circuit breaker on successful operation
+  recordSuccess() {
+    if (this.circuitBreakerFailures > 0) {
+      this.circuitBreakerFailures = 0;
+      if (this.isCircuitBreakerOpen) {
+        this.isCircuitBreakerOpen = false;
+        logger.info('Redis circuit breaker closed - connection restored');
+      }
+    }
+  }
+
   async connect() {
+    if (this.isCircuitBreakerTripped()) {
+      logger.warn('Redis circuit breaker is open, skipping connection attempt');
+      return false;
+    }
+
     try {
-      // Get Redis URL from environment variables
-      const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+      if (this.client && this.isConnected) {
+        return true;
+      }
+
+      logger.info('Attempting to connect to Redis...');
       
-      logger.info('🔄 Connecting to Redis...', { url: redisUrl.replace(/\/\/.*@/, '//***@') });
-      
-      // Create Redis client
       this.client = createClient({
-        url: redisUrl,
+        url: process.env.REDIS_URL || 'redis://localhost:6379',
         socket: {
+          connectTimeout: 10000,
+          lazyConnect: true,
           reconnectStrategy: (retries) => {
             if (retries > this.maxRetries) {
-              logger.error('❌ Redis connection failed after max retries');
-              return false;
+              logger.error(`Redis connection failed after ${retries} attempts`);
+              this.recordFailure();
+              return new Error('Max retries exceeded');
             }
-            const delay = Math.min(retries * this.retryDelay, 5000);
-            logger.warn(`🔄 Redis reconnection attempt ${retries} in ${delay}ms`);
+            const delay = Math.min(this.retryDelay * Math.pow(2, retries), 10000);
+            logger.warn(`Redis reconnect attempt ${retries} in ${delay}ms`);
             return delay;
           }
         }
       });
 
-      // Set up event listeners
-      this.setupEventListeners();
+      // Enhanced event handlers
+      this.client.on('connect', () => {
+        logger.info('Redis client connected successfully');
+        this.isConnected = true;
+        this.retryAttempts = 0;
+        this.recordSuccess();
+      });
 
-      // Connect to Redis
+      this.client.on('ready', () => {
+        logger.info('Redis client ready for commands');
+      });
+
+      this.client.on('error', (error) => {
+        logger.error('Redis client error:', error.message);
+        this.isConnected = false;
+        this.recordFailure();
+      });
+
+      this.client.on('end', () => {
+        logger.warn('Redis client connection ended');
+        this.isConnected = false;
+      });
+
+      this.client.on('reconnecting', () => {
+        logger.info('Redis client attempting to reconnect...');
+      });
+
       await this.client.connect();
-      
-      this.isConnected = true;
-      this.retryAttempts = 0;
-      
-      logger.info('✅ Redis connected successfully');
-      
-      // Test connection
-      await this.client.ping();
-      logger.info('🏓 Redis ping successful');
-      
+      return true;
+
     } catch (error) {
+      logger.error('Failed to connect to Redis:', error.message);
       this.isConnected = false;
-      this.retryAttempts++;
-      logger.error('❌ Redis connection error:', error.message);
+      this.recordFailure();
       
-      if (this.retryAttempts < this.maxRetries) {
-        logger.info(`🔄 Retrying Redis connection in ${this.retryDelay}ms...`);
-        setTimeout(() => this.connect(), this.retryDelay);
-      } else {
-        logger.error('❌ Redis connection failed permanently');
-        throw error;
-      }
+      // Don't throw error - allow app to continue without Redis
+      return false;
+    }
+  }
+
+  async executeWithFallback(operation, fallback = null) {
+    // Check circuit breaker
+    if (this.isCircuitBreakerTripped()) {
+      logger.debug('Redis circuit breaker is open, using fallback');
+      return fallback;
+    }
+
+    // Check connection
+    if (!this.isConnected || !this.client) {
+      logger.debug('Redis not connected, using fallback');
+      return fallback;
+    }
+
+    try {
+      const result = await operation();
+      this.recordSuccess();
+      return result;
+    } catch (error) {
+      logger.error('Redis operation failed:', error.message);
+      this.recordFailure();
+      return fallback;
     }
   }
 
@@ -115,11 +199,23 @@ class RedisClient {
   }
 
   /**
-   * Get Redis client instance
+   * Get Redis client instance safely
+   * 
+   * @returns {Object|null} Redis client instance or null if not connected
+   */
+  getClient() {
+    if (!this.client || !this.isConnected) {
+      return null;
+    }
+    return this.client;
+  }
+
+  /**
+   * Get Redis client instance (throws error if not connected)
    * 
    * @returns {Object} Redis client instance
    */
-  getClient() {
+  getClientOrThrow() {
     if (!this.client || !this.isConnected) {
       throw new Error('Redis client not connected');
     }
@@ -168,13 +264,11 @@ const redisClient = new RedisClient();
  * @returns {Promise<any>} Cached value or null
  */
 const get = async (key) => {
-  try {
-    if (!redisClient.isReady()) {
-      logger.warn('⚠️ Redis not ready, skipping cache get');
-      return null;
-    }
+  return await redisClient.executeWithFallback(async () => {
+    const client = redisClient.getClient();
+    if (!client) return null;
     
-    const value = await redisClient.getClient().get(key);
+    const value = await client.get(key);
     if (value) {
       logger.debug(`📖 Cache hit: ${key}`);
       return JSON.parse(value);
@@ -182,10 +276,7 @@ const get = async (key) => {
     
     logger.debug(`📭 Cache miss: ${key}`);
     return null;
-  } catch (error) {
-    logger.error('❌ Cache get error:', error.message);
-    return null;
-  }
+  }, null);
 };
 
 /**
@@ -196,17 +287,14 @@ const get = async (key) => {
  * @param {number} ttl - Time to live in seconds (default: 300 = 5 minutes)
  */
 const set = async (key, value, ttl = 300) => {
-  try {
-    if (!redisClient.isReady()) {
-      logger.warn('⚠️ Redis not ready, skipping cache set');
-      return;
-    }
+  return await redisClient.executeWithFallback(async () => {
+    const client = redisClient.getClient();
+    if (!client) return false;
     
-    await redisClient.getClient().setEx(key, ttl, JSON.stringify(value));
+    await client.setEx(key, ttl, JSON.stringify(value));
     logger.debug(`💾 Cache set: ${key} (TTL: ${ttl}s)`);
-  } catch (error) {
-    logger.error('❌ Cache set error:', error.message);
-  }
+    return true;
+  }, false);
 };
 
 /**
@@ -215,17 +303,14 @@ const set = async (key, value, ttl = 300) => {
  * @param {string} key - Cache key to delete
  */
 const del = async (key) => {
-  try {
-    if (!redisClient.isReady()) {
-      logger.warn('⚠️ Redis not ready, skipping cache delete');
-      return;
-    }
+  return await redisClient.executeWithFallback(async () => {
+    const client = redisClient.getClient();
+    if (!client) return false;
     
-    await redisClient.getClient().del(key);
+    await client.del(key);
     logger.debug(`🗑️ Cache deleted: ${key}`);
-  } catch (error) {
-    logger.error('❌ Cache delete error:', error.message);
-  }
+    return true;
+  }, false);
 };
 
 /**
@@ -234,22 +319,18 @@ const del = async (key) => {
  * @param {string} pattern - Pattern to match (e.g., 'blogs:*')
  */
 const clearPattern = async (pattern) => {
-  try {
-    if (!redisClient.isReady()) {
-      logger.warn('⚠️ Redis not ready, skipping cache clear');
-      return;
-    }
+  return await redisClient.executeWithFallback(async () => {
+    const client = redisClient.getClient();
+    if (!client) return 0;
     
-    const keys = await redisClient.getClient().keys(pattern);
+    const keys = await client.keys(pattern);
     if (keys.length > 0) {
-      await redisClient.getClient().del(keys);
-      logger.debug(`🧹 Cache cleared: ${keys.length} keys matching ${pattern}`);
+      await client.del(keys);
+      logger.debug(`🧹 Cache cleared: ${keys.length} keys matching '${pattern}'`);
     }
-  } catch (error) {
-    logger.error('❌ Cache clear error:', error.message);
-  }
+    return keys.length;
+  }, 0);
 };
-
 module.exports = {
   redisClient,
   cache: {
