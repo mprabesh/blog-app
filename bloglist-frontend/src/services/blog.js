@@ -77,17 +77,18 @@ export const login = ({ username, password }) => {
 /**
  * User Registration
  * 
- * Creates a new user account with the provided credentials.
- * This is a public endpoint that doesn't require authentication.
+ * Register a new user account with username, name, email, and password.
+ * No authentication required as this creates a new user account.
  * 
  * @param {Object} userData - User registration data
- * @param {string} userData.username - Desired username (must be unique)
+ * @param {string} userData.username - Unique username (min 3 chars, alphanumeric + underscore)
  * @param {string} userData.name - User's full name
+ * @param {string} userData.email - User's email address (must be valid email format)
  * @param {string} userData.password - User's password (min 3 characters)
  * @returns {Promise} Axios promise with created user object
  */
-export const register = ({ username, name, password }) => {
-  return axios.post(`${API_BASE_URL}/users`, { username, name, password });
+export const register = ({ username, name, email, password }) => {
+  return axios.post(`${API_BASE_URL}/users`, { username, name, email, password });
 };
 
 /**

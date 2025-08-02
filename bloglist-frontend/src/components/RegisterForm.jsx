@@ -17,6 +17,7 @@ const RegisterForm = ({
   const [formData, setFormData] = useState({
     username: "",
     name: "",
+    email: "",
     password: "",
     confirmPassword: "",
   });
@@ -59,6 +60,13 @@ const RegisterForm = ({
       errors.name = "Name must be at least 3 characters";
     }
 
+    // Email validation
+    if (!formData.email.trim()) {
+      errors.email = "Email is required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      errors.email = "Please enter a valid email address";
+    }
+
     // Password validation
     if (!formData.password) {
       errors.password = "Password is required";
@@ -90,6 +98,7 @@ const RegisterForm = ({
       await handleRegister({
         username: formData.username.trim(),
         name: formData.name.trim(),
+        email: formData.email.trim().toLowerCase(),
         password: formData.password,
       });
       
@@ -97,6 +106,7 @@ const RegisterForm = ({
       setFormData({
         username: "",
         name: "",
+        email: "",
         password: "",
         confirmPassword: "",
       });
@@ -108,6 +118,7 @@ const RegisterForm = ({
   const isFormValid = 
     formData.username.trim() &&
     formData.name.trim() &&
+    formData.email.trim() &&
     formData.password &&
     formData.confirmPassword &&
     formData.password === formData.confirmPassword &&
@@ -159,6 +170,26 @@ const RegisterForm = ({
           />
           {validationErrors.name && (
             <p className="text-xs text-red-500 mt-1">{validationErrors.name}</p>
+          )}
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="reg-email" className="form-label">
+            Email *
+          </label>
+          <input
+            id="reg-email"
+            name="email"
+            type="email"
+            className={`form-input ${validationErrors.email ? 'border-red-500' : ''}`}
+            placeholder="Enter your email address"
+            value={formData.email}
+            onChange={handleChange}
+            required
+            autoComplete="email"
+          />
+          {validationErrors.email && (
+            <p className="text-xs text-red-500 mt-1">{validationErrors.email}</p>
           )}
         </div>
         
