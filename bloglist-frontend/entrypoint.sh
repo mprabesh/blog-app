@@ -28,10 +28,20 @@ echo "Backend URL: $BACKEND_URL"
 
 # Find all JavaScript files in the built assets and replace the placeholder
 # We use a placeholder __VITE_API_URL__ that gets replaced at runtime
-find /usr/share/nginx/html -name "*.js" -type f -exec sed -i "s|__VITE_API_URL__|$VITE_API_URL|g" {} \;
+echo "Replacing placeholders in JavaScript files..."
+find /usr/share/nginx/html -name "*.js" -type f -exec sh -c 'echo "Processing: $1"; sed -i "s|__VITE_API_URL__|'"$VITE_API_URL"'|g" "$1"' _ {} \;
 
 # Also update any potential occurrences in HTML files
-find /usr/share/nginx/html -name "*.html" -type f -exec sed -i "s|__VITE_API_URL__|$VITE_API_URL|g" {} \;
+echo "Replacing placeholders in HTML files..."
+find /usr/share/nginx/html -name "*.html" -type f -exec sh -c 'echo "Processing: $1"; sed -i "s|__VITE_API_URL__|'"$VITE_API_URL"'|g" "$1"' _ {} \;
+
+# Verify replacement worked
+echo "Verifying placeholder replacement..."
+if find /usr/share/nginx/html -name "*.js" -type f -exec grep -l "__VITE_API_URL__" {} \; | head -1; then
+    echo "WARNING: Some placeholders were not replaced!"
+else
+    echo "All placeholders successfully replaced with: $VITE_API_URL"
+fi
 
 # Replace backend URL in nginx configuration
 sed -i "s|__BACKEND_URL__|$BACKEND_URL|g" /etc/nginx/conf.d/default.conf
