@@ -1,0 +1,627 @@
+name: 'Database Migration Management'
+description: 'MongoDB migration management with schema validation, rollback capabilities, and data seeding for different environments'
+author: 'Blog App DevOps Team'
+
+inputs:
+  action:
+    description: 'Migration action to perform (migrate, rollback, seed, validate, status)'
+    required: true
+    default: 'migrate'
+  mongo_url:
+    description: 'MongoDB connection URL'
+    required: true
+  environment:
+    description: 'Target environment (development, staging, production)'
+    required: true
+  migration_path:
+    description: 'Path to migration files'
+    required: false
+    default: './migrations'
+  seed_data_path:
+    description: 'Path to seed data files'
+    required: false
+    default: './seeds'
+  rollback_steps:
+    description: 'Number of migration steps to rollback'
+    required: false
+    default: '1'
+  dry_run:
+    description: 'Perform a dry run without making actual changes'
+    required: false
+    default: 'false'
+  backup_before_migration:
+    description: 'Create backup before running migrations'
+    required: false
+    default: 'true'
+  force:
+    description: 'Force migration even if validations fail'
+    required: false
+    default: 'false'
+  timeout:
+    description: 'Timeout in seconds for migration operations'
+    required: false
+    default: '300'
+
+outputs:
+  migration_status:
+    description: 'Status of the migration operation (success, failed, skipped)'
+    value: ${{ steps.migration.outputs.migration_status }}
+  migrations_applied:
+    description: 'Number of migrations applied'
+    value: ${{ steps.migration.outputs.migrations_applied }}
+  backup_file:
+    description: 'Path to backup file if created'
+    value: ${{ steps.migration.outputs.backup_file }}
+  migration_log:
+    description: 'Detailed migration log'
+    value: ${{ steps.migration.outputs.migration_log }}
+  database_version:
+    description: 'Current database schema version'
+    value: ${{ steps.migration.outputs.database_version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js for migrations
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install migration dependencies
+      shell: bash
+      run: |
+        npm install -g mongodb bcrypt fs-extra
+
+    - name: Initialize migration environment
+      shell: bash
+      run: |
+        # Create migration directories if they don't exist
+        mkdir -p ${{ inputs.migration_path }}
+        mkdir -p ${{ inputs.seed_data_path }}
+        mkdir -p ./migration-logs
+        mkdir -p ./migration-backups
+
+    - name: Execute database migration
+      id: migration
+      shell: bash
+      run: |
+        # Create comprehensive migration management script
+        cat > migration-manager.js << 'EOF'
+        const { MongoClient } = require('mongodb');
+        const fs = require('fs-extra');
+        const path = require('path');
+        const bcrypt = require('bcrypt');
+        
+        // Migration configuration
+        const config = {
+          action: process.env.ACTION,
+          mongoUrl: process.env.MONGO_URL,
+          environment: process.env.ENVIRONMENT,
+          migrationPath: process.env.MIGRATION_PATH,
+          seedDataPath: process.env.SEED_DATA_PATH,
+          rollbackSteps: parseInt(process.env.ROLLBACK_STEPS),
+          dryRun: process.env.DRY_RUN === 'true',
+          backupBeforeMigration: process.env.BACKUP_BEFORE_MIGRATION === 'true',
+          force: process.env.FORCE === 'true',
+          timeout: parseInt(process.env.TIMEOUT) * 1000
+        };
+        
+        // Migration state tracking
+        let client;
+        let db;
+        let migrationLog = [];
+        let backupFile = null;
+        
+        // Utility functions
+        function log(message, level = 'info') {
+          const timestamp = new Date().toISOString();
+          const logEntry = { timestamp, level, message };
+          migrationLog.push(logEntry);
+          
+          const emoji = {
+            info: 'ℹ️',
+            success: '✅',
+            warning: '⚠️',
+            error: '❌',
+            debug: '🔍'
+          };
+          
+          console.log(`${emoji[level] || 'ℹ️'} [${timestamp}] ${message}`);
+        }
+        
+        // Connect to database
+        async function connectDatabase() {
+          try {
+            log('Connecting to MongoDB database...', 'info');
+            client = new MongoClient(config.mongoUrl, {
+              connectTimeoutMS: config.timeout,
+              serverSelectionTimeoutMS: config.timeout
+            });
+            
+            await client.connect();
+            db = client.db();
+            
+            // Verify connection
+            await db.admin().ping();
+            log('Database connection established successfully', 'success');
+            
+            return true;
+          } catch (error) {
+            log(`Database connection failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Initialize migration tracking collection
+        async function initializeMigrationTracking() {
+          try {
+            const migrationCollection = db.collection('migrations');
+            
+            // Create index for migration tracking
+            await migrationCollection.createIndex({ version: 1 }, { unique: true });
+            
+            log('Migration tracking initialized', 'success');
+          } catch (error) {
+            if (error.code !== 11000) { // Ignore duplicate key error
+              log(`Migration tracking initialization failed: ${error.message}`, 'error');
+              throw error;
+            }
+          }
+        }
+        
+        // Get current database version
+        async function getCurrentVersion() {
+          try {
+            const migrationCollection = db.collection('migrations');
+            const latestMigration = await migrationCollection
+              .findOne({}, { sort: { version: -1 } });
+            
+            const version = latestMigration ? latestMigration.version : 0;
+            log(`Current database version: ${version}`, 'info');
+            return version;
+          } catch (error) {
+            log(`Failed to get current version: ${error.message}`, 'error');
+            return 0;
+          }
+        }
+        
+        // Create database backup
+        async function createBackup() {
+          if (!config.backupBeforeMigration || config.dryRun) {
+            log('Backup skipped', 'info');
+            return null;
+          }
+          
+          try {
+            log('Creating database backup...', 'info');
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFileName = `backup-${config.environment}-${timestamp}.json`;
+            const backupPath = `./migration-backups/${backupFileName}`;
+            
+            // Get all collections
+            const collections = await db.listCollections().toArray();
+            const backup = {
+              metadata: {
+                timestamp: new Date().toISOString(),
+                environment: config.environment,
+                version: await getCurrentVersion(),
+                collections: collections.length
+              },
+              data: {}
+            };
+            
+            // Backup each collection
+            for (const collection of collections) {
+              const collectionName = collection.name;
+              if (collectionName.startsWith('system.')) continue;
+              
+              log(`Backing up collection: ${collectionName}`, 'debug');
+              const docs = await db.collection(collectionName).find({}).toArray();
+              backup.data[collectionName] = docs;
+              log(`Backed up ${docs.length} documents from ${collectionName}`, 'debug');
+            }
+            
+            // Save backup file
+            await fs.ensureDir('./migration-backups');
+            await fs.writeJson(backupPath, backup, { spaces: 2 });
+            
+            const stats = await fs.stat(backupPath);
+            const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+            
+            log(`Backup created successfully: ${backupPath} (${sizeMB} MB)`, 'success');
+            return backupPath;
+            
+          } catch (error) {
+            log(`Backup creation failed: ${error.message}`, 'error');
+            if (!config.force) {
+              throw error;
+            }
+            return null;
+          }
+        }
+        
+        // Load migration files
+        async function loadMigrationFiles() {
+          try {
+            const migrationFiles = [];
+            const migrationDir = config.migrationPath;
+            
+            if (!await fs.pathExists(migrationDir)) {
+              log(`Migration directory not found: ${migrationDir}`, 'warning');
+              return migrationFiles;
+            }
+            
+            const files = await fs.readdir(migrationDir);
+            const jsFiles = files.filter(file => file.endsWith('.js')).sort();
+            
+            for (const file of jsFiles) {
+              const filePath = path.join(migrationDir, file);
+              const versionMatch = file.match(/^(\d+)/);
+              
+              if (versionMatch) {
+                const version = parseInt(versionMatch[1]);
+                migrationFiles.push({
+                  version,
+                  filename: file,
+                  path: filePath
+                });
+              } else {
+                log(`Invalid migration file format: ${file}`, 'warning');
+              }
+            }
+            
+            log(`Found ${migrationFiles.length} migration files`, 'info');
+            return migrationFiles;
+            
+          } catch (error) {
+            log(`Failed to load migration files: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Execute migration
+        async function executeMigration(migration) {
+          try {
+            log(`Executing migration: ${migration.filename}`, 'info');
+            
+            if (config.dryRun) {
+              log(`DRY RUN: Would execute migration ${migration.filename}`, 'warning');
+              return { applied: false, dryRun: true };
+            }
+            
+            // Load and execute migration file
+            const migrationModule = require(path.resolve(migration.path));
+            
+            if (typeof migrationModule.up !== 'function') {
+              throw new Error(`Migration ${migration.filename} missing 'up' function`);
+            }
+            
+            // Execute migration
+            await migrationModule.up(db);
+            
+            // Record migration in tracking collection
+            const migrationCollection = db.collection('migrations');
+            await migrationCollection.insertOne({
+              version: migration.version,
+              filename: migration.filename,
+              appliedAt: new Date(),
+              environment: config.environment
+            });
+            
+            log(`Migration ${migration.filename} applied successfully`, 'success');
+            return { applied: true, dryRun: false };
+            
+          } catch (error) {
+            log(`Migration ${migration.filename} failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Execute rollback
+        async function executeRollback(migration) {
+          try {
+            log(`Rolling back migration: ${migration.filename}`, 'info');
+            
+            if (config.dryRun) {
+              log(`DRY RUN: Would rollback migration ${migration.filename}`, 'warning');
+              return { rolledBack: false, dryRun: true };
+            }
+            
+            // Load and execute rollback
+            const migrationModule = require(path.resolve(migration.path));
+            
+            if (typeof migrationModule.down !== 'function') {
+              throw new Error(`Migration ${migration.filename} missing 'down' function`);
+            }
+            
+            // Execute rollback
+            await migrationModule.down(db);
+            
+            // Remove migration from tracking collection
+            const migrationCollection = db.collection('migrations');
+            await migrationCollection.deleteOne({ version: migration.version });
+            
+            log(`Migration ${migration.filename} rolled back successfully`, 'success');
+            return { rolledBack: true, dryRun: false };
+            
+          } catch (error) {
+            log(`Rollback ${migration.filename} failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Seed database
+        async function seedDatabase() {
+          try {
+            log('Starting database seeding...', 'info');
+            
+            const seedDir = config.seedDataPath;
+            if (!await fs.pathExists(seedDir)) {
+              log(`Seed directory not found: ${seedDir}`, 'warning');
+              return { seeded: 0 };
+            }
+            
+            const seedFiles = await fs.readdir(seedDir);
+            const jsonFiles = seedFiles.filter(file => file.endsWith('.json'));
+            let totalSeeded = 0;
+            
+            for (const file of jsonFiles) {
+              const filePath = path.join(seedDir, file);
+              const collectionName = path.basename(file, '.json');
+              
+              log(`Seeding collection: ${collectionName}`, 'info');
+              
+              if (config.dryRun) {
+                log(`DRY RUN: Would seed collection ${collectionName}`, 'warning');
+                continue;
+              }
+              
+              const seedData = await fs.readJson(filePath);
+              
+              // Clear existing data in non-production environments
+              if (config.environment !== 'production') {
+                await db.collection(collectionName).deleteMany({});
+                log(`Cleared existing data from ${collectionName}`, 'debug');
+              }
+              
+              // Insert seed data
+              if (Array.isArray(seedData) && seedData.length > 0) {
+                // Hash passwords if this is the users collection
+                if (collectionName === 'users') {
+                  for (const user of seedData) {
+                    if (user.password && !user.passwordHash) {
+                      user.passwordHash = await bcrypt.hash(user.password, 10);
+                      delete user.password;
+                    }
+                  }
+                }
+                
+                await db.collection(collectionName).insertMany(seedData);
+                log(`Seeded ${seedData.length} documents into ${collectionName}`, 'success');
+                totalSeeded += seedData.length;
+              }
+            }
+            
+            log(`Database seeding completed: ${totalSeeded} documents seeded`, 'success');
+            return { seeded: totalSeeded };
+            
+          } catch (error) {
+            log(`Database seeding failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Validate database schema
+        async function validateSchema() {
+          try {
+            log('Validating database schema...', 'info');
+            
+            const collections = await db.listCollections().toArray();
+            const validation = {
+              collections: collections.length,
+              indexes: 0,
+              issues: []
+            };
+            
+            // Check required collections
+            const requiredCollections = ['users', 'blogs'];
+            for (const required of requiredCollections) {
+              const exists = collections.some(col => col.name === required);
+              if (!exists) {
+                validation.issues.push(`Missing required collection: ${required}`);
+              }
+            }
+            
+            // Check indexes
+            for (const collection of collections) {
+              if (collection.name.startsWith('system.')) continue;
+              
+              const indexes = await db.collection(collection.name).indexes();
+              validation.indexes += indexes.length;
+              
+              // Specific index checks
+              if (collection.name === 'users') {
+                const usernameIndex = indexes.find(idx => idx.key && idx.key.username);
+                if (!usernameIndex) {
+                  validation.issues.push('Missing username index on users collection');
+                }
+              }
+            }
+            
+            log(`Schema validation completed: ${validation.issues.length} issues found`, 
+                 validation.issues.length > 0 ? 'warning' : 'success');
+            
+            return validation;
+            
+          } catch (error) {
+            log(`Schema validation failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Main migration management function
+        async function manageMigrations() {
+          let migrationsApplied = 0;
+          let status = 'failed';
+          
+          try {
+            await connectDatabase();
+            await initializeMigrationTracking();
+            
+            const currentVersion = await getCurrentVersion();
+            
+            switch (config.action) {
+              case 'migrate':
+                log('Starting database migration...', 'info');
+                
+                backupFile = await createBackup();
+                
+                const migrations = await loadMigrationFiles();
+                const pendingMigrations = migrations.filter(m => m.version > currentVersion);
+                
+                if (pendingMigrations.length === 0) {
+                  log('No pending migrations found', 'info');
+                  status = 'skipped';
+                } else {
+                  log(`Found ${pendingMigrations.length} pending migrations`, 'info');
+                  
+                  for (const migration of pendingMigrations) {
+                    const result = await executeMigration(migration);
+                    if (result.applied) {
+                      migrationsApplied++;
+                    }
+                  }
+                  
+                  status = 'success';
+                  log(`Migration completed: ${migrationsApplied} migrations applied`, 'success');
+                }
+                break;
+                
+              case 'rollback':
+                log(`Starting database rollback (${config.rollbackSteps} steps)...`, 'info');
+                
+                backupFile = await createBackup();
+                
+                const allMigrations = await loadMigrationFiles();
+                const appliedMigrations = await db.collection('migrations')
+                  .find({})
+                  .sort({ version: -1 })
+                  .limit(config.rollbackSteps)
+                  .toArray();
+                
+                if (appliedMigrations.length === 0) {
+                  log('No migrations to rollback', 'info');
+                  status = 'skipped';
+                } else {
+                  for (const appliedMigration of appliedMigrations) {
+                    const migration = allMigrations.find(m => m.version === appliedMigration.version);
+                    if (migration) {
+                      const result = await executeRollback(migration);
+                      if (result.rolledBack) {
+                        migrationsApplied++;
+                      }
+                    }
+                  }
+                  
+                  status = 'success';
+                  log(`Rollback completed: ${migrationsApplied} migrations rolled back`, 'success');
+                }
+                break;
+                
+              case 'seed':
+                log('Starting database seeding...', 'info');
+                const seedResult = await seedDatabase();
+                migrationsApplied = seedResult.seeded;
+                status = 'success';
+                break;
+                
+              case 'validate':
+                log('Starting schema validation...', 'info');
+                const validation = await validateSchema();
+                status = validation.issues.length === 0 ? 'success' : 'failed';
+                break;
+                
+              case 'status':
+                log('Getting migration status...', 'info');
+                const appliedCount = await db.collection('migrations').countDocuments();
+                log(`Current version: ${currentVersion}, Applied migrations: ${appliedCount}`, 'info');
+                status = 'success';
+                break;
+                
+              default:
+                throw new Error(`Unknown action: ${config.action}`);
+            }
+            
+          } catch (error) {
+            log(`Migration management failed: ${error.message}`, 'error');
+            status = 'failed';
+            throw error;
+          } finally {
+            if (client) {
+              await client.close();
+              log('Database connection closed', 'debug');
+            }
+          }
+          
+          return {
+            status,
+            migrationsApplied,
+            backupFile,
+            currentVersion: await getCurrentVersion(),
+            log: migrationLog
+          };
+        }
+        
+        // Execute migration management and set outputs
+        manageMigrations()
+          .then(result => {
+            console.log('::set-output name=migration_status::' + result.status);
+            console.log('::set-output name=migrations_applied::' + result.migrationsApplied);
+            console.log('::set-output name=backup_file::' + (result.backupFile || ''));
+            console.log('::set-output name=database_version::' + (result.currentVersion || 0));
+            console.log('::set-output name=migration_log::' + JSON.stringify(result.log));
+            
+            // Save detailed log
+            const logFile = `./migration-logs/migration-${config.action}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            require('fs-extra').writeJsonSync(logFile, result.log, { spaces: 2 });
+            
+            if (result.status === 'failed') {
+              process.exit(1);
+            }
+          })
+          .catch(error => {
+            console.error('💥 Migration management failed:', error);
+            console.log('::set-output name=migration_status::failed');
+            console.log('::set-output name=migration_log::[{"level":"error","message":"' + error.message + '"}]');
+            process.exit(1);
+          });
+        EOF
+        
+        # Set environment variables and run migration
+        export ACTION="${{ inputs.action }}"
+        export MONGO_URL="${{ inputs.mongo_url }}"
+        export ENVIRONMENT="${{ inputs.environment }}"
+        export MIGRATION_PATH="${{ inputs.migration_path }}"
+        export SEED_DATA_PATH="${{ inputs.seed_data_path }}"
+        export ROLLBACK_STEPS="${{ inputs.rollback_steps }}"
+        export DRY_RUN="${{ inputs.dry_run }}"
+        export BACKUP_BEFORE_MIGRATION="${{ inputs.backup_before_migration }}"
+        export FORCE="${{ inputs.force }}"
+        export TIMEOUT="${{ inputs.timeout }}"
+        
+        node migration-manager.js
+
+    - name: Upload migration artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: migration-artifacts-${{ github.run_number }}
+        path: |
+          ./migration-logs/
+          ./migration-backups/
+        retention-days: 30
+
+branding:
+  icon: 'database'
+  color: 'blue'

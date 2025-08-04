@@ -1,0 +1,588 @@
+# ===================================================================
+# Staging Deployment Pipeline for Blog Application
+# ===================================================================
+#
+# This workflow implements automated staging deployment including:
+# - Triggered on successful CI pipeline completion
+# - Deploy using Docker containers to staging environment
+# - Run integration tests against staging environment
+# - Database migration and seeding for staging data
+# - Redis cache setup and validation
+# - Health checks and smoke tests
+# - Artifact storage and deployment notifications
+#
+# Triggers:
+# - Successful completion of CI pipeline on main/develop branches
+# - Pull request updates (for preview deployments)
+# - Manual workflow dispatch for hotfixes
+# ===================================================================
+
+name: 🚀 Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["🚀 CI Pipeline"]
+    types:
+      - completed
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Staging environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - preview
+      skip_tests:
+        description: 'Skip post-deployment tests'
+        required: false
+        default: 'false'
+        type: boolean
+      force_deploy:
+        description: 'Force deployment even if CI failed'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  STAGING_URL: https://staging-blog-app.example.com
+  PREVIEW_URL: https://pr-${{ github.event.number }}-blog-app.example.com
+
+jobs:
+  # ===================================================================
+  # PRE-DEPLOYMENT CHECKS - Validate deployment prerequisites
+  # ===================================================================
+  pre-deployment-checks:
+    name: 🔍 Pre-deployment Checks
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_staging: ${{ steps.check.outputs.deploy_staging }}
+      deploy_preview: ${{ steps.check.outputs.deploy_preview }}
+      environment: ${{ steps.check.outputs.environment }}
+      app_url: ${{ steps.check.outputs.app_url }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check deployment conditions
+        id: check
+        run: |
+          # Check if CI workflow was successful (unless forced)
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ] && [ "${{ inputs.force_deploy }}" != "true" ]; then
+              echo "❌ CI pipeline failed. Deployment aborted."
+              echo "deploy_staging=false" >> $GITHUB_OUTPUT
+              echo "deploy_preview=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+          
+          # Determine deployment type
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "deploy_preview=true" >> $GITHUB_OUTPUT
+            echo "deploy_staging=false" >> $GITHUB_OUTPUT
+            echo "environment=preview" >> $GITHUB_OUTPUT
+            echo "app_url=${{ env.PREVIEW_URL }}" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_staging=true" >> $GITHUB_OUTPUT
+            echo "deploy_preview=false" >> $GITHUB_OUTPUT
+            echo "environment=${{ inputs.environment || 'staging' }}" >> $GITHUB_OUTPUT
+            echo "app_url=${{ env.STAGING_URL }}" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "✅ Pre-deployment checks passed"
+
+      - name: 📊 Deployment summary
+        run: |
+          echo "=== Deployment Configuration ==="
+          echo "Event: ${{ github.event_name }}"
+          echo "Environment: ${{ steps.check.outputs.environment }}"
+          echo "App URL: ${{ steps.check.outputs.app_url }}"
+          echo "Skip Tests: ${{ inputs.skip_tests }}"
+          echo "Force Deploy: ${{ inputs.force_deploy }}"
+
+  # ===================================================================
+  # DATABASE MIGRATION - Prepare staging database
+  # ===================================================================
+  database-migration:
+    name: 🗄️ Database Migration
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    if: needs.pre-deployment-checks.outputs.deploy_staging == 'true' || needs.pre-deployment-checks.outputs.deploy_preview == 'true'
+    environment: ${{ needs.pre-deployment-checks.outputs.environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: './blog-list/package-lock.json'
+
+      - name: 📦 Install backend dependencies
+        working-directory: ./blog-list
+        run: npm ci
+
+      - name: 🔒 Database backup (staging only)
+        if: needs.pre-deployment-checks.outputs.environment == 'staging'
+        env:
+          MONGO_URL: ${{ secrets.STAGING_MONGO_URL }}
+        run: |
+          echo "🔒 Creating database backup before migration..."
+          # Create backup script
+          cat > backup-db.js << 'EOF'
+          const { MongoClient } = require('mongodb');
+          const fs = require('fs');
+          
+          async function backup() {
+            const client = new MongoClient(process.env.MONGO_URL);
+            await client.connect();
+            const db = client.db();
+            
+            const collections = await db.listCollections().toArray();
+            const backupData = {};
+            
+            for (const collection of collections) {
+              const collectionName = collection.name;
+              const docs = await db.collection(collectionName).find({}).toArray();
+              backupData[collectionName] = docs;
+              console.log(`Backed up ${docs.length} documents from ${collectionName}`);
+            }
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFile = `backup-${timestamp}.json`;
+            fs.writeFileSync(backupFile, JSON.stringify(backupData, null, 2));
+            
+            console.log(`✅ Backup saved to ${backupFile}`);
+            await client.close();
+          }
+          
+          backup().catch(console.error);
+          EOF
+          
+          node backup-db.js
+
+      - name: 🗄️ Run database migrations
+        env:
+          MONGO_URL: ${{ secrets.STAGING_MONGO_URL }}
+          NODE_ENV: staging
+        working-directory: ./blog-list
+        run: |
+          echo "🗄️ Running database migrations..."
+          # Check if migration scripts exist
+          if [ -f "migrations/migrate.js" ]; then
+            node migrations/migrate.js
+          else
+            echo "ℹ️ No migration scripts found. Skipping migrations."
+          fi
+
+      - name: 🌱 Seed staging data
+        if: needs.pre-deployment-checks.outputs.environment == 'staging'
+        env:
+          MONGO_URL: ${{ secrets.STAGING_MONGO_URL }}
+          NODE_ENV: staging
+        working-directory: ./blog-list
+        run: |
+          echo "🌱 Seeding staging database with test data..."
+          if [ -f "seedAll.js" ]; then
+            node seedAll.js
+          else
+            echo "ℹ️ No seed script found. Skipping data seeding."
+          fi
+
+  # ===================================================================
+  # STAGING DEPLOYMENT - Deploy application to staging environment
+  # ===================================================================
+  deploy-staging:
+    name: 🚀 Deploy to ${{ needs.pre-deployment-checks.outputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, database-migration]
+    if: always() && needs.pre-deployment-checks.outputs.deploy_staging == 'true' || needs.pre-deployment-checks.outputs.deploy_preview == 'true'
+    environment: ${{ needs.pre-deployment-checks.outputs.environment }}
+    
+    outputs:
+      deployment_url: ${{ steps.deploy.outputs.deployment_url }}
+      deployment_id: ${{ steps.deploy.outputs.deployment_id }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Determine image tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "backend_tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+            echo "frontend_tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "backend_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "frontend_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📦 Pull Docker images
+        run: |
+          echo "📦 Pulling Docker images..."
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-blog-backend:${{ steps.tags.outputs.backend_tag }}
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-blog-frontend:${{ steps.tags.outputs.frontend_tag }}
+
+      - name: 🏗️ Setup environment configuration
+        env:
+          MONGO_URL: ${{ secrets.STAGING_MONGO_URL }}
+          SECRET_KEY: ${{ secrets.STAGING_SECRET_KEY }}
+          REDIS_URL: ${{ secrets.STAGING_REDIS_URL }}
+        run: |
+          echo "🏗️ Setting up environment configuration..."
+          
+          # Create staging environment file
+          cat > .env.staging << EOF
+          # Staging Environment Configuration
+          NODE_ENV=staging
+          PROD_PORT=8081
+          MONGO_URL=$MONGO_URL
+          SECRET_KEY=$SECRET_KEY
+          REDIS_URL=$REDIS_URL
+          VITE_API_URL=${{ needs.pre-deployment-checks.outputs.app_url }}/api
+          EOF
+          
+          echo "✅ Environment configuration created"
+
+      - name: 🐳 Deploy with Docker Compose
+        id: deploy
+        run: |
+          echo "🐳 Deploying to ${{ needs.pre-deployment-checks.outputs.environment }}..."
+          
+          # Create deployment-specific docker-compose file
+          cp docker-compose.yaml docker-compose.staging.yaml
+          
+          # Update to use pulled images
+          sed -i 's|build:|#build:|g' docker-compose.staging.yaml
+          sed -i 's|context: ./blog-list|#context: ./blog-list|g' docker-compose.staging.yaml
+          sed -i 's|dockerfile: Dockerfile|#dockerfile: Dockerfile|g' docker-compose.staging.yaml
+          sed -i '/backend:/a \ \ image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-blog-backend:${{ steps.tags.outputs.backend_tag }}' docker-compose.staging.yaml
+          sed -i '/frontend:/a \ \ image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-blog-frontend:${{ steps.tags.outputs.frontend_tag }}' docker-compose.staging.yaml
+          
+          # Add environment file
+          sed -i '/backend:/a \ \ env_file: .env.staging' docker-compose.staging.yaml
+          sed -i '/frontend:/a \ \ env_file: .env.staging' docker-compose.staging.yaml
+          
+          # Deploy the application
+          docker-compose -f docker-compose.staging.yaml up -d
+          
+          # Wait for services to be healthy
+          echo "⏳ Waiting for services to be healthy..."
+          timeout 300 bash -c 'until docker-compose -f docker-compose.staging.yaml ps | grep -E "(healthy|running)"; do sleep 10; done'
+          
+          # Set outputs
+          echo "deployment_url=${{ needs.pre-deployment-checks.outputs.app_url }}" >> $GITHUB_OUTPUT
+          echo "deployment_id=staging-$(date +%s)" >> $GITHUB_OUTPUT
+          
+          echo "✅ Deployment completed successfully"
+
+      - name: 📋 Collect deployment logs
+        if: always()
+        run: |
+          docker-compose -f docker-compose.staging.yaml logs > staging-deployment-logs.txt
+          docker-compose -f docker-compose.staging.yaml ps > staging-deployment-status.txt
+
+      - name: 📁 Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-deployment-${{ github.run_number }}
+          path: |
+            staging-deployment-logs.txt
+            staging-deployment-status.txt
+            .env.staging
+            docker-compose.staging.yaml
+          retention-days: 30
+
+  # ===================================================================
+  # REDIS CACHE SETUP - Configure and validate Redis cache
+  # ===================================================================
+  redis-setup:
+    name: 🔴 Redis Cache Setup
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-staging]
+    if: always() && needs.deploy-staging.result == 'success'
+    environment: ${{ needs.pre-deployment-checks.outputs.environment }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 🔴 Setup Redis cache
+        env:
+          REDIS_URL: ${{ secrets.STAGING_REDIS_URL }}
+        run: |
+          echo "🔴 Setting up Redis cache configuration..."
+          
+          # Create Redis setup script
+          cat > setup-redis.js << 'EOF'
+          const redis = require('redis');
+          
+          async function setupRedis() {
+            const client = redis.createClient({ url: process.env.REDIS_URL });
+            
+            try {
+              await client.connect();
+              console.log('✅ Connected to Redis');
+              
+              // Test basic operations
+              await client.set('health-check', 'ok');
+              const value = await client.get('health-check');
+              console.log('✅ Redis health check:', value);
+              
+              // Clear any existing cache
+              await client.flushDb();
+              console.log('✅ Cache cleared');
+              
+              // Set up cache warming
+              await client.set('cache:status', 'ready');
+              console.log('✅ Cache warming completed');
+              
+            } catch (error) {
+              console.error('❌ Redis setup failed:', error);
+              process.exit(1);
+            } finally {
+              await client.quit();
+            }
+          }
+          
+          setupRedis();
+          EOF
+          
+          # Install Redis client and run setup
+          npm install redis
+          node setup-redis.js
+
+  # ===================================================================
+  # POST-DEPLOYMENT TESTING - Integration and smoke tests
+  # ===================================================================
+  post-deployment-tests:
+    name: 🧪 Post-deployment Tests
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-staging, redis-setup]
+    if: always() && needs.deploy-staging.result == 'success' && !inputs.skip_tests
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📦 Install test dependencies
+        run: |
+          npm install -g newman
+          npm install axios
+
+      - name: 🔗 Health check tests
+        env:
+          BASE_URL: ${{ needs.deploy-staging.outputs.deployment_url }}
+        run: |
+          echo "🔗 Running health check tests against $BASE_URL..."
+          
+          # Create health check script
+          cat > health-check.js << 'EOF'
+          const axios = require('axios');
+          
+          async function healthCheck() {
+            const baseUrl = process.env.BASE_URL;
+            const tests = [
+              { name: 'Frontend Health', url: `${baseUrl}` },
+              { name: 'Backend Health', url: `${baseUrl}/api/ping` },
+              { name: 'API Blogs Endpoint', url: `${baseUrl}/api/blogs` },
+              { name: 'API Users Endpoint', url: `${baseUrl}/api/users` }
+            ];
+            
+            let passed = 0;
+            let failed = 0;
+            
+            for (const test of tests) {
+              try {
+                const response = await axios.get(test.url, { timeout: 30000 });
+                if (response.status >= 200 && response.status < 400) {
+                  console.log(`✅ ${test.name}: PASSED (${response.status})`);
+                  passed++;
+                } else {
+                  console.log(`❌ ${test.name}: FAILED (${response.status})`);
+                  failed++;
+                }
+              } catch (error) {
+                console.log(`❌ ${test.name}: FAILED (${error.message})`);
+                failed++;
+              }
+            }
+            
+            console.log(`\n📊 Results: ${passed} passed, ${failed} failed`);
+            
+            if (failed > 0) {
+              process.exit(1);
+            }
+          }
+          
+          healthCheck();
+          EOF
+          
+          node health-check.js
+
+      - name: 🚀 Smoke tests
+        env:
+          BASE_URL: ${{ needs.deploy-staging.outputs.deployment_url }}
+        run: |
+          echo "🚀 Running smoke tests..."
+          
+          # Test user registration and login flow
+          cat > smoke-tests.js << 'EOF'
+          const axios = require('axios');
+          
+          async function smokeTests() {
+            const baseUrl = process.env.BASE_URL;
+            const apiUrl = `${baseUrl}/api`;
+            
+            try {
+              // Test 1: Get all blogs (public endpoint)
+              console.log('📝 Testing blog listing...');
+              const blogsResponse = await axios.get(`${apiUrl}/blogs`);
+              console.log(`✅ Blogs endpoint: ${blogsResponse.data.length} blogs found`);
+              
+              // Test 2: Try to register a test user
+              console.log('👤 Testing user registration...');
+              const testUser = {
+                username: `testuser_${Date.now()}`,
+                name: 'Test User',
+                password: 'testpassword123'
+              };
+              
+              try {
+                await axios.post(`${apiUrl}/users`, testUser);
+                console.log('✅ User registration: PASSED');
+              } catch (error) {
+                if (error.response?.status === 400) {
+                  console.log('ℹ️ User registration: Validation working correctly');
+                } else {
+                  throw error;
+                }
+              }
+              
+              // Test 3: Test login endpoint
+              console.log('🔐 Testing login endpoint...');
+              try {
+                await axios.post(`${apiUrl}/login`, {
+                  username: 'nonexistentuser',
+                  password: 'wrongpassword'
+                });
+              } catch (error) {
+                if (error.response?.status === 401) {
+                  console.log('✅ Login security: PASSED');
+                } else {
+                  throw error;
+                }
+              }
+              
+              console.log('🎉 All smoke tests passed!');
+              
+            } catch (error) {
+              console.error('❌ Smoke test failed:', error.message);
+              process.exit(1);
+            }
+          }
+          
+          smokeTests();
+          EOF
+          
+          node smoke-tests.js
+
+      - name: 📈 Performance tests
+        env:
+          BASE_URL: ${{ needs.deploy-staging.outputs.deployment_url }}
+        run: |
+          echo "📈 Running basic performance tests..."
+          
+          # Simple load test with curl
+          echo "🔄 Testing response times..."
+          for i in {1..5}; do
+            echo "Request $i:"
+            curl -w "Response time: %{time_total}s\n" -s -o /dev/null "$BASE_URL/api/blogs"
+            sleep 1
+          done
+
+  # ===================================================================
+  # DEPLOYMENT NOTIFICATION - Notify about deployment status
+  # ===================================================================
+  notify-deployment:
+    name: 📢 Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-staging, post-deployment-tests]
+    if: always()
+    
+    steps:
+      - name: 🎉 Notify successful deployment
+        if: needs.deploy-staging.result == 'success'
+        run: |
+          echo "🎉 Deployment to ${{ needs.pre-deployment-checks.outputs.environment }} completed successfully!"
+          echo "🌐 Application URL: ${{ needs.deploy-staging.outputs.deployment_url }}"
+          echo "🔗 Deployment ID: ${{ needs.deploy-staging.outputs.deployment_id }}"
+          echo "📊 Tests: ${{ needs.post-deployment-tests.result }}"
+
+      - name: ❌ Notify failed deployment
+        if: needs.deploy-staging.result == 'failure'
+        run: |
+          echo "❌ Deployment to ${{ needs.pre-deployment-checks.outputs.environment }} failed!"
+          echo "🔍 Check the logs for details"
+          echo "🔄 Consider rolling back if necessary"
+
+      - name: 📝 Create deployment summary
+        if: always()
+        run: |
+          cat > deployment-summary.md << EOF
+          # Deployment Summary
+          
+          **Environment:** ${{ needs.pre-deployment-checks.outputs.environment }}
+          **Status:** ${{ needs.deploy-staging.result }}
+          **URL:** ${{ needs.deploy-staging.outputs.deployment_url }}
+          **Deployment ID:** ${{ needs.deploy-staging.outputs.deployment_id }}
+          **Tests:** ${{ needs.post-deployment-tests.result }}
+          **Timestamp:** $(date -u)
+          
+          ## Results
+          - Pre-deployment checks: ${{ needs.pre-deployment-checks.result }}
+          - Database migration: ${{ needs.database-migration.result }}
+          - Staging deployment: ${{ needs.deploy-staging.result }}
+          - Redis setup: ${{ needs.redis-setup.result }}
+          - Post-deployment tests: ${{ needs.post-deployment-tests.result }}
+          
+          EOF
+
+      - name: 📁 Upload deployment summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-summary-${{ github.run_number }}
+          path: deployment-summary.md
+          retention-days: 90

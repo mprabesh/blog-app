@@ -1,0 +1,480 @@
+name: 'Multi-Service Health Check'
+description: 'Comprehensive health validation for blog application services with configurable timeout and retry logic'
+author: 'Blog App DevOps Team'
+
+inputs:
+  services:
+    description: 'Comma-separated list of services to check (frontend,backend,database,redis)'
+    required: false
+    default: 'frontend,backend'
+  base_url:
+    description: 'Base URL for the application'
+    required: true
+  timeout:
+    description: 'Timeout in seconds for each health check'
+    required: false
+    default: '30'
+  retry_count:
+    description: 'Number of retry attempts for failed checks'
+    required: false
+    default: '3'
+  retry_delay:
+    description: 'Delay in seconds between retry attempts'
+    required: false
+    default: '5'
+  fail_fast:
+    description: 'Stop on first failure instead of checking all services'
+    required: false
+    default: 'false'
+  detailed_output:
+    description: 'Include detailed timing and response information'
+    required: false
+    default: 'true'
+  mongo_url:
+    description: 'MongoDB connection URL for database health check'
+    required: false
+  redis_url:
+    description: 'Redis connection URL for cache health check'
+    required: false
+
+outputs:
+  overall_status:
+    description: 'Overall health status (healthy, unhealthy, degraded)'
+    value: ${{ steps.health-check.outputs.overall_status }}
+  frontend_status:
+    description: 'Frontend service health status'
+    value: ${{ steps.health-check.outputs.frontend_status }}
+  backend_status:
+    description: 'Backend service health status'
+    value: ${{ steps.health-check.outputs.backend_status }}
+  database_status:
+    description: 'Database service health status'
+    value: ${{ steps.health-check.outputs.database_status }}
+  redis_status:
+    description: 'Redis cache service health status'
+    value: ${{ steps.health-check.outputs.redis_status }}
+  response_times:
+    description: 'JSON object with response times for each service'
+    value: ${{ steps.health-check.outputs.response_times }}
+  health_report:
+    description: 'Detailed health check report'
+    value: ${{ steps.health-check.outputs.health_report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js for health checks
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install health check dependencies
+      shell: bash
+      run: |
+        npm install -g axios mongodb redis
+
+    - name: Perform health checks
+      id: health-check
+      shell: bash
+      run: |
+        # Create comprehensive health check script
+        cat > health-check.js << 'EOF'
+        const axios = require('axios');
+        const fs = require('fs');
+        
+        // Health check configuration
+        const config = {
+          services: process.env.SERVICES.split(',').map(s => s.trim()),
+          baseUrl: process.env.BASE_URL,
+          timeout: parseInt(process.env.TIMEOUT) * 1000,
+          retryCount: parseInt(process.env.RETRY_COUNT),
+          retryDelay: parseInt(process.env.RETRY_DELAY) * 1000,
+          failFast: process.env.FAIL_FAST === 'true',
+          detailedOutput: process.env.DETAILED_OUTPUT === 'true',
+          mongoUrl: process.env.MONGO_URL,
+          redisUrl: process.env.REDIS_URL
+        };
+        
+        // Health check results
+        const results = {
+          timestamp: new Date().toISOString(),
+          overall_status: 'healthy',
+          services: {},
+          response_times: {},
+          errors: []
+        };
+        
+        // Utility function to wait
+        const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        
+        // HTTP health check with retries
+        async function httpHealthCheck(serviceName, url, timeout, retries) {
+          for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+              const startTime = Date.now();
+              console.log(`🔍 Checking ${serviceName} (attempt ${attempt}/${retries}): ${url}`);
+              
+              const response = await axios.get(url, {
+                timeout: timeout,
+                validateStatus: () => true,
+                headers: {
+                  'User-Agent': 'HealthCheck/1.0'
+                }
+              });
+              
+              const responseTime = Date.now() - startTime;
+              
+              if (response.status >= 200 && response.status < 400) {
+                console.log(`✅ ${serviceName}: HEALTHY (${response.status}, ${responseTime}ms)`);
+                return {
+                  status: 'healthy',
+                  statusCode: response.status,
+                  responseTime: responseTime,
+                  attempt: attempt,
+                  details: config.detailedOutput ? {
+                    headers: response.headers,
+                    dataLength: response.data ? response.data.length : 0
+                  } : undefined
+                };
+              } else {
+                console.log(`⚠️ ${serviceName}: UNHEALTHY (${response.status}, ${responseTime}ms)`);
+                if (attempt === retries) {
+                  return {
+                    status: 'unhealthy',
+                    statusCode: response.status,
+                    responseTime: responseTime,
+                    attempt: attempt,
+                    error: `HTTP ${response.status}`
+                  };
+                }
+              }
+            } catch (error) {
+              console.log(`❌ ${serviceName}: ERROR (attempt ${attempt}/${retries}): ${error.message}`);
+              if (attempt === retries) {
+                return {
+                  status: 'unhealthy',
+                  responseTime: Date.now() - startTime,
+                  attempt: attempt,
+                  error: error.message
+                };
+              }
+            }
+            
+            if (attempt < retries) {
+              console.log(`⏳ Waiting ${config.retryDelay}ms before retry...`);
+              await wait(config.retryDelay);
+            }
+          }
+        }
+        
+        // Database health check
+        async function databaseHealthCheck() {
+          if (!config.mongoUrl) {
+            console.log('ℹ️ Database health check skipped (no connection URL provided)');
+            return { status: 'skipped', reason: 'No connection URL provided' };
+          }
+          
+          try {
+            const { MongoClient } = require('mongodb');
+            const startTime = Date.now();
+            
+            console.log('🔍 Checking database connection...');
+            const client = new MongoClient(config.mongoUrl, {
+              connectTimeoutMS: config.timeout,
+              serverSelectionTimeoutMS: config.timeout
+            });
+            
+            await client.connect();
+            
+            // Perform ping to verify connection
+            const adminDb = client.db().admin();
+            await adminDb.ping();
+            
+            const responseTime = Date.now() - startTime;
+            
+            // Get database stats if detailed output is enabled
+            let details = undefined;
+            if (config.detailedOutput) {
+              try {
+                const dbStats = await client.db().stats();
+                details = {
+                  collections: dbStats.collections,
+                  dataSize: dbStats.dataSize,
+                  indexSize: dbStats.indexSize
+                };
+              } catch (err) {
+                console.log('ℹ️ Could not retrieve database stats');
+              }
+            }
+            
+            await client.close();
+            
+            console.log(`✅ Database: HEALTHY (${responseTime}ms)`);
+            return {
+              status: 'healthy',
+              responseTime: responseTime,
+              details: details
+            };
+          } catch (error) {
+            console.log(`❌ Database: ERROR: ${error.message}`);
+            return {
+              status: 'unhealthy',
+              error: error.message
+            };
+          }
+        }
+        
+        // Redis health check
+        async function redisHealthCheck() {
+          if (!config.redisUrl) {
+            console.log('ℹ️ Redis health check skipped (no connection URL provided)');
+            return { status: 'skipped', reason: 'No connection URL provided' };
+          }
+          
+          try {
+            const redis = require('redis');
+            const startTime = Date.now();
+            
+            console.log('🔍 Checking Redis connection...');
+            const client = redis.createClient({ url: config.redisUrl });
+            
+            await client.connect();
+            
+            // Perform ping to verify connection
+            const pingResult = await client.ping();
+            
+            const responseTime = Date.now() - startTime;
+            
+            // Get Redis info if detailed output is enabled
+            let details = undefined;
+            if (config.detailedOutput) {
+              try {
+                const info = await client.info();
+                const lines = info.split('\r\n');
+                details = {};
+                lines.forEach(line => {
+                  if (line.includes(':') && !line.startsWith('#')) {
+                    const [key, value] = line.split(':');
+                    details[key] = value;
+                  }
+                });
+              } catch (err) {
+                console.log('ℹ️ Could not retrieve Redis info');
+              }
+            }
+            
+            await client.quit();
+            
+            console.log(`✅ Redis: HEALTHY (${responseTime}ms)`);
+            return {
+              status: 'healthy',
+              responseTime: responseTime,
+              details: details
+            };
+          } catch (error) {
+            console.log(`❌ Redis: ERROR: ${error.message}`);
+            return {
+              status: 'unhealthy',
+              error: error.message
+            };
+          }
+        }
+        
+        // Main health check execution
+        async function runHealthChecks() {
+          console.log('🏥 Starting multi-service health check...');
+          console.log(`📋 Services to check: ${config.services.join(', ')}`);
+          console.log(`🌐 Base URL: ${config.baseUrl}`);
+          console.log(`⏱️ Timeout: ${config.timeout}ms, Retries: ${config.retryCount}`);
+          console.log('');
+          
+          let hasUnhealthyService = false;
+          
+          for (const service of config.services) {
+            let serviceResult;
+            
+            try {
+              switch (service.toLowerCase()) {
+                case 'frontend':
+                  serviceResult = await httpHealthCheck(
+                    'Frontend',
+                    config.baseUrl,
+                    config.timeout,
+                    config.retryCount
+                  );
+                  break;
+                  
+                case 'backend':
+                  serviceResult = await httpHealthCheck(
+                    'Backend',
+                    `${config.baseUrl}/api/ping`,
+                    config.timeout,
+                    config.retryCount
+                  );
+                  break;
+                  
+                case 'database':
+                  serviceResult = await databaseHealthCheck();
+                  break;
+                  
+                case 'redis':
+                  serviceResult = await redisHealthCheck();
+                  break;
+                  
+                default:
+                  console.log(`⚠️ Unknown service: ${service}`);
+                  serviceResult = {
+                    status: 'unknown',
+                    error: `Unknown service type: ${service}`
+                  };
+              }
+              
+              results.services[service] = serviceResult;
+              results.response_times[service] = serviceResult.responseTime || 0;
+              
+              if (serviceResult.status === 'unhealthy') {
+                hasUnhealthyService = true;
+                results.errors.push({
+                  service: service,
+                  error: serviceResult.error || 'Service unhealthy'
+                });
+                
+                if (config.failFast) {
+                  console.log('🚨 Fail-fast enabled, stopping health checks');
+                  break;
+                }
+              }
+              
+            } catch (error) {
+              console.log(`❌ ${service}: CRITICAL ERROR: ${error.message}`);
+              results.services[service] = {
+                status: 'unhealthy',
+                error: error.message
+              };
+              hasUnhealthyService = true;
+              results.errors.push({
+                service: service,
+                error: error.message
+              });
+              
+              if (config.failFast) {
+                break;
+              }
+            }
+          }
+          
+          // Determine overall status
+          const serviceStatuses = Object.values(results.services).map(s => s.status);
+          const healthyCount = serviceStatuses.filter(s => s === 'healthy').length;
+          const totalChecked = serviceStatuses.filter(s => s !== 'skipped').length;
+          
+          if (hasUnhealthyService) {
+            if (healthyCount === 0) {
+              results.overall_status = 'unhealthy';
+            } else {
+              results.overall_status = 'degraded';
+            }
+          } else {
+            results.overall_status = 'healthy';
+          }
+          
+          // Generate summary
+          console.log('');
+          console.log('📊 Health Check Summary:');
+          console.log(`Overall Status: ${results.overall_status.toUpperCase()}`);
+          console.log(`Healthy Services: ${healthyCount}/${totalChecked}`);
+          
+          for (const [service, result] of Object.entries(results.services)) {
+            const status = result.status.toUpperCase();
+            const time = result.responseTime ? ` (${result.responseTime}ms)` : '';
+            const icon = result.status === 'healthy' ? '✅' : 
+                        result.status === 'skipped' ? 'ℹ️' : '❌';
+            console.log(`${icon} ${service}: ${status}${time}`);
+          }
+          
+          if (results.errors.length > 0) {
+            console.log('');
+            console.log('❌ Errors:');
+            results.errors.forEach(error => {
+              console.log(`  - ${error.service}: ${error.error}`);
+            });
+          }
+          
+          return results;
+        }
+        
+        // Execute health checks and set outputs
+        runHealthChecks()
+          .then(results => {
+            // Set GitHub Actions outputs
+            console.log('::set-output name=overall_status::' + results.overall_status);
+            console.log('::set-output name=frontend_status::' + (results.services.frontend?.status || 'not_checked'));
+            console.log('::set-output name=backend_status::' + (results.services.backend?.status || 'not_checked'));
+            console.log('::set-output name=database_status::' + (results.services.database?.status || 'not_checked'));
+            console.log('::set-output name=redis_status::' + (results.services.redis?.status || 'not_checked'));
+            console.log('::set-output name=response_times::' + JSON.stringify(results.response_times));
+            
+            // Create detailed report
+            const report = {
+              summary: {
+                timestamp: results.timestamp,
+                overall_status: results.overall_status,
+                services_checked: Object.keys(results.services).length,
+                healthy_services: Object.values(results.services).filter(s => s.status === 'healthy').length,
+                total_response_time: Object.values(results.response_times).reduce((a, b) => a + b, 0)
+              },
+              services: results.services,
+              response_times: results.response_times,
+              errors: results.errors,
+              configuration: {
+                base_url: config.baseUrl,
+                timeout: config.timeout,
+                retry_count: config.retryCount,
+                retry_delay: config.retryDelay,
+                fail_fast: config.failFast,
+                detailed_output: config.detailedOutput
+              }
+            };
+            
+            console.log('::set-output name=health_report::' + JSON.stringify(report));
+            
+            // Save detailed report to file
+            fs.writeFileSync('health-check-report.json', JSON.stringify(report, null, 2));
+            
+            // Exit with appropriate code
+            if (results.overall_status === 'unhealthy') {
+              console.log('');
+              console.log('💥 Health check failed - exiting with error code');
+              process.exit(1);
+            } else if (results.overall_status === 'degraded') {
+              console.log('');
+              console.log('⚠️ Health check completed with degraded status');
+            } else {
+              console.log('');
+              console.log('🎉 All health checks passed successfully!');
+            }
+          })
+          .catch(error => {
+            console.error('💥 Health check script failed:', error);
+            console.log('::set-output name=overall_status::error');
+            console.log('::set-output name=health_report::{"error": "' + error.message + '"}');
+            process.exit(1);
+          });
+        EOF
+        
+        # Set environment variables and run health check
+        export SERVICES="${{ inputs.services }}"
+        export BASE_URL="${{ inputs.base_url }}"
+        export TIMEOUT="${{ inputs.timeout }}"
+        export RETRY_COUNT="${{ inputs.retry_count }}"
+        export RETRY_DELAY="${{ inputs.retry_delay }}"
+        export FAIL_FAST="${{ inputs.fail_fast }}"
+        export DETAILED_OUTPUT="${{ inputs.detailed_output }}"
+        export MONGO_URL="${{ inputs.mongo_url }}"
+        export REDIS_URL="${{ inputs.redis_url }}"
+        
+        node health-check.js
+
+branding:
+  icon: 'heart'
+  color: 'green'

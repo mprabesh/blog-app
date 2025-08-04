@@ -1,0 +1,677 @@
+name: 'Deployment Notification'
+description: 'Send comprehensive deployment notifications via Slack, email, and other channels with customizable message templates'
+author: 'Blog App DevOps Team'
+
+inputs:
+  status:
+    description: 'Deployment status (success, failure, warning, started, completed)'
+    required: true
+  environment:
+    description: 'Target environment (development, staging, production)'
+    required: true
+  deployment_url:
+    description: 'URL of the deployed application'
+    required: false
+  channels:
+    description: 'Comma-separated list of notification channels (slack, email, teams, webhook)'
+    required: false
+    default: 'slack'
+  slack_webhook_url:
+    description: 'Slack webhook URL for notifications'
+    required: false
+  email_to:
+    description: 'Email addresses to notify (comma-separated)'
+    required: false
+  email_smtp_host:
+    description: 'SMTP host for email notifications'
+    required: false
+  email_smtp_user:
+    description: 'SMTP username for email notifications'
+    required: false
+  email_smtp_password:
+    description: 'SMTP password for email notifications'
+    required: false
+  teams_webhook_url:
+    description: 'Microsoft Teams webhook URL'
+    required: false
+  webhook_url:
+    description: 'Custom webhook URL for notifications'
+    required: false
+  custom_message:
+    description: 'Custom message to include in notifications'
+    required: false
+  include_logs:
+    description: 'Include deployment logs in notification'
+    required: false
+    default: 'false'
+  mention_users:
+    description: 'Users to mention in notifications (comma-separated)'
+    required: false
+  deployment_id:
+    description: 'Unique deployment identifier'
+    required: false
+  commit_sha:
+    description: 'Git commit SHA for the deployment'
+    required: false
+  branch:
+    description: 'Git branch being deployed'
+    required: false
+  author:
+    description: 'Author of the deployment'
+    required: false
+
+outputs:
+  notification_status:
+    description: 'Status of notification delivery (success, partial, failed)'
+    value: ${{ steps.notify.outputs.notification_status }}
+  channels_notified:
+    description: 'List of channels that were successfully notified'
+    value: ${{ steps.notify.outputs.channels_notified }}
+  failed_channels:
+    description: 'List of channels that failed to receive notifications'
+    value: ${{ steps.notify.outputs.failed_channels }}
+  notification_report:
+    description: 'Detailed notification delivery report'
+    value: ${{ steps.notify.outputs.notification_report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js for notifications
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install notification dependencies
+      shell: bash
+      run: |
+        npm install -g axios nodemailer
+
+    - name: Send deployment notifications
+      id: notify
+      shell: bash
+      run: |
+        # Create comprehensive notification script
+        cat > notification-sender.js << 'EOF'
+        const axios = require('axios');
+        const fs = require('fs');
+        
+        // Notification configuration
+        const config = {
+          status: process.env.STATUS,
+          environment: process.env.ENVIRONMENT,
+          deploymentUrl: process.env.DEPLOYMENT_URL,
+          channels: process.env.CHANNELS.split(',').map(c => c.trim()),
+          slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
+          emailTo: process.env.EMAIL_TO ? process.env.EMAIL_TO.split(',').map(e => e.trim()) : [],
+          emailSmtpHost: process.env.EMAIL_SMTP_HOST,
+          emailSmtpUser: process.env.EMAIL_SMTP_USER,
+          emailSmtpPassword: process.env.EMAIL_SMTP_PASSWORD,
+          teamsWebhookUrl: process.env.TEAMS_WEBHOOK_URL,
+          webhookUrl: process.env.WEBHOOK_URL,
+          customMessage: process.env.CUSTOM_MESSAGE,
+          includeLogs: process.env.INCLUDE_LOGS === 'true',
+          mentionUsers: process.env.MENTION_USERS ? process.env.MENTION_USERS.split(',').map(u => u.trim()) : [],
+          deploymentId: process.env.DEPLOYMENT_ID,
+          commitSha: process.env.COMMIT_SHA,
+          branch: process.env.BRANCH,
+          author: process.env.AUTHOR
+        };
+        
+        let notificationLog = [];
+        let successfulChannels = [];
+        let failedChannels = [];
+        
+        // Utility functions
+        function log(message, level = 'info') {
+          const timestamp = new Date().toISOString();
+          const logEntry = { timestamp, level, message };
+          notificationLog.push(logEntry);
+          
+          const emoji = {
+            info: 'ℹ️',
+            success: '✅',
+            warning: '⚠️',
+            error: '❌',
+            debug: '🔍'
+          };
+          
+          console.log(`${emoji[level] || 'ℹ️'} [${timestamp}] ${message}`);
+        }
+        
+        // Generate status emoji and color
+        function getStatusDetails(status) {
+          const statusMap = {
+            success: { emoji: '✅', color: '#28a745', priority: 'normal' },
+            failure: { emoji: '❌', color: '#dc3545', priority: 'high' },
+            warning: { emoji: '⚠️', color: '#ffc107', priority: 'medium' },
+            started: { emoji: '🚀', color: '#007bff', priority: 'low' },
+            completed: { emoji: '🎉', color: '#28a745', priority: 'normal' }
+          };
+          
+          return statusMap[status] || { emoji: 'ℹ️', color: '#6c757d', priority: 'normal' };
+        }
+        
+        // Generate deployment summary
+        function generateDeploymentSummary() {
+          const statusDetails = getStatusDetails(config.status);
+          
+          return {
+            title: `${statusDetails.emoji} Deployment ${config.status.toUpperCase()}`,
+            environment: config.environment,
+            status: config.status,
+            url: config.deploymentUrl,
+            timestamp: new Date().toISOString(),
+            deploymentId: config.deploymentId,
+            commit: config.commitSha,
+            branch: config.branch,
+            author: config.author,
+            customMessage: config.customMessage
+          };
+        }
+        
+        // Send Slack notification
+        async function sendSlackNotification() {
+          if (!config.slackWebhookUrl) {
+            log('Slack webhook URL not provided, skipping Slack notification', 'warning');
+            return false;
+          }
+          
+          try {
+            log('Sending Slack notification...', 'info');
+            
+            const summary = generateDeploymentSummary();
+            const statusDetails = getStatusDetails(config.status);
+            
+            // Build Slack message
+            const blocks = [
+              {
+                type: 'header',
+                text: {
+                  type: 'plain_text',
+                  text: summary.title
+                }
+              },
+              {
+                type: 'section',
+                fields: [
+                  {
+                    type: 'mrkdwn',
+                    text: `*Environment:*\n${config.environment}`
+                  },
+                  {
+                    type: 'mrkdwn',
+                    text: `*Status:*\n${config.status.toUpperCase()}`
+                  }
+                ]
+              }
+            ];
+            
+            // Add deployment details
+            if (config.deploymentUrl || config.branch || config.commitSha) {
+              const fields = [];
+              
+              if (config.deploymentUrl) {
+                fields.push({
+                  type: 'mrkdwn',
+                  text: `*URL:*\n<${config.deploymentUrl}|View Application>`
+                });
+              }
+              
+              if (config.branch) {
+                fields.push({
+                  type: 'mrkdwn',
+                  text: `*Branch:*\n${config.branch}`
+                });
+              }
+              
+              if (config.commitSha) {
+                fields.push({
+                  type: 'mrkdwn',
+                  text: `*Commit:*\n${config.commitSha.substring(0, 8)}`
+                });
+              }
+              
+              if (config.author) {
+                fields.push({
+                  type: 'mrkdwn',
+                  text: `*Author:*\n${config.author}`
+                });
+              }
+              
+              blocks.push({
+                type: 'section',
+                fields: fields
+              });
+            }
+            
+            // Add custom message if provided
+            if (config.customMessage) {
+              blocks.push({
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `*Message:*\n${config.customMessage}`
+                }
+              });
+            }
+            
+            // Add mentions if specified
+            let text = '';
+            if (config.mentionUsers.length > 0) {
+              const mentions = config.mentionUsers.map(user => `<@${user}>`).join(' ');
+              text = `${mentions} - Deployment notification`;
+            }
+            
+            const slackPayload = {
+              text: text || summary.title,
+              attachments: [
+                {
+                  color: statusDetails.color,
+                  blocks: blocks,
+                  footer: 'Blog App CI/CD',
+                  ts: Math.floor(Date.now() / 1000)
+                }
+              ]
+            };
+            
+            // Send to Slack
+            const response = await axios.post(config.slackWebhookUrl, slackPayload, {
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              timeout: 10000
+            });
+            
+            if (response.status === 200) {
+              log('Slack notification sent successfully', 'success');
+              return true;
+            } else {
+              log(`Slack notification failed with status ${response.status}`, 'error');
+              return false;
+            }
+            
+          } catch (error) {
+            log(`Slack notification failed: ${error.message}`, 'error');
+            return false;
+          }
+        }
+        
+        // Send email notification
+        async function sendEmailNotification() {
+          if (!config.emailTo.length || !config.emailSmtpHost) {
+            log('Email configuration incomplete, skipping email notification', 'warning');
+            return false;
+          }
+          
+          try {
+            log('Sending email notification...', 'info');
+            
+            const nodemailer = require('nodemailer');
+            const summary = generateDeploymentSummary();
+            const statusDetails = getStatusDetails(config.status);
+            
+            // Create SMTP transporter
+            const transporter = nodemailer.createTransporter({
+              host: config.emailSmtpHost,
+              port: 587,
+              secure: false,
+              auth: {
+                user: config.emailSmtpUser,
+                pass: config.emailSmtpPassword
+              }
+            });
+            
+            // Generate HTML email content
+            const htmlContent = `
+              <!DOCTYPE html>
+              <html>
+              <head>
+                <meta charset="utf-8">
+                <title>Deployment Notification</title>
+                <style>
+                  body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+                  .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                  .header { background-color: ${statusDetails.color}; color: white; padding: 20px; text-align: center; }
+                  .content { padding: 20px; }
+                  .field { margin-bottom: 15px; }
+                  .label { font-weight: bold; color: #333; }
+                  .value { color: #666; margin-top: 5px; }
+                  .footer { background-color: #f8f9fa; padding: 15px; text-align: center; color: #6c757d; font-size: 12px; }
+                  .button { display: inline-block; background-color: ${statusDetails.color}; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin: 10px 0; }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <div class="header">
+                    <h1>${summary.title}</h1>
+                  </div>
+                  <div class="content">
+                    <div class="field">
+                      <div class="label">Environment:</div>
+                      <div class="value">${config.environment}</div>
+                    </div>
+                    <div class="field">
+                      <div class="label">Status:</div>
+                      <div class="value">${config.status.toUpperCase()}</div>
+                    </div>
+                    ${config.deploymentUrl ? `
+                    <div class="field">
+                      <div class="label">Application URL:</div>
+                      <div class="value"><a href="${config.deploymentUrl}" class="button">View Application</a></div>
+                    </div>
+                    ` : ''}
+                    ${config.branch ? `
+                    <div class="field">
+                      <div class="label">Branch:</div>
+                      <div class="value">${config.branch}</div>
+                    </div>
+                    ` : ''}
+                    ${config.commitSha ? `
+                    <div class="field">
+                      <div class="label">Commit:</div>
+                      <div class="value">${config.commitSha}</div>
+                    </div>
+                    ` : ''}
+                    ${config.author ? `
+                    <div class="field">
+                      <div class="label">Author:</div>
+                      <div class="value">${config.author}</div>
+                    </div>
+                    ` : ''}
+                    ${config.customMessage ? `
+                    <div class="field">
+                      <div class="label">Message:</div>
+                      <div class="value">${config.customMessage}</div>
+                    </div>
+                    ` : ''}
+                    <div class="field">
+                      <div class="label">Timestamp:</div>
+                      <div class="value">${new Date().toLocaleString()}</div>
+                    </div>
+                  </div>
+                  <div class="footer">
+                    Blog App CI/CD System - Automated Deployment Notification
+                  </div>
+                </div>
+              </body>
+              </html>
+            `;
+            
+            // Send email to all recipients
+            const mailOptions = {
+              from: config.emailSmtpUser,
+              to: config.emailTo.join(', '),
+              subject: `[${config.environment.toUpperCase()}] ${summary.title}`,
+              html: htmlContent
+            };
+            
+            await transporter.sendMail(mailOptions);
+            
+            log(`Email notification sent to ${config.emailTo.length} recipients`, 'success');
+            return true;
+            
+          } catch (error) {
+            log(`Email notification failed: ${error.message}`, 'error');
+            return false;
+          }
+        }
+        
+        // Send Microsoft Teams notification
+        async function sendTeamsNotification() {
+          if (!config.teamsWebhookUrl) {
+            log('Teams webhook URL not provided, skipping Teams notification', 'warning');
+            return false;
+          }
+          
+          try {
+            log('Sending Microsoft Teams notification...', 'info');
+            
+            const summary = generateDeploymentSummary();
+            const statusDetails = getStatusDetails(config.status);
+            
+            const teamsPayload = {
+              '@type': 'MessageCard',
+              '@context': 'http://schema.org/extensions',
+              themeColor: statusDetails.color.replace('#', ''),
+              summary: summary.title,
+              sections: [
+                {
+                  activityTitle: summary.title,
+                  activitySubtitle: `Environment: ${config.environment}`,
+                  facts: [
+                    { name: 'Status', value: config.status.toUpperCase() },
+                    { name: 'Environment', value: config.environment },
+                    ...(config.branch ? [{ name: 'Branch', value: config.branch }] : []),
+                    ...(config.commitSha ? [{ name: 'Commit', value: config.commitSha.substring(0, 8) }] : []),
+                    ...(config.author ? [{ name: 'Author', value: config.author }] : []),
+                    { name: 'Timestamp', value: new Date().toLocaleString() }
+                  ],
+                  markdown: true
+                }
+              ],
+              potentialAction: config.deploymentUrl ? [
+                {
+                  '@type': 'OpenUri',
+                  name: 'View Application',
+                  targets: [
+                    { os: 'default', uri: config.deploymentUrl }
+                  ]
+                }
+              ] : []
+            };
+            
+            if (config.customMessage) {
+              teamsPayload.sections[0].text = config.customMessage;
+            }
+            
+            const response = await axios.post(config.teamsWebhookUrl, teamsPayload, {
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              timeout: 10000
+            });
+            
+            if (response.status === 200) {
+              log('Teams notification sent successfully', 'success');
+              return true;
+            } else {
+              log(`Teams notification failed with status ${response.status}`, 'error');
+              return false;
+            }
+            
+          } catch (error) {
+            log(`Teams notification failed: ${error.message}`, 'error');
+            return false;
+          }
+        }
+        
+        // Send custom webhook notification
+        async function sendWebhookNotification() {
+          if (!config.webhookUrl) {
+            log('Custom webhook URL not provided, skipping webhook notification', 'warning');
+            return false;
+          }
+          
+          try {
+            log('Sending custom webhook notification...', 'info');
+            
+            const summary = generateDeploymentSummary();
+            
+            const webhookPayload = {
+              event: 'deployment',
+              status: config.status,
+              environment: config.environment,
+              deployment_url: config.deploymentUrl,
+              deployment_id: config.deploymentId,
+              commit_sha: config.commitSha,
+              branch: config.branch,
+              author: config.author,
+              custom_message: config.customMessage,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                title: summary.title,
+                mentions: config.mentionUsers
+              }
+            };
+            
+            const response = await axios.post(config.webhookUrl, webhookPayload, {
+              headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'BlogApp-DeploymentNotification/1.0'
+              },
+              timeout: 10000
+            });
+            
+            if (response.status >= 200 && response.status < 300) {
+              log('Custom webhook notification sent successfully', 'success');
+              return true;
+            } else {
+              log(`Custom webhook notification failed with status ${response.status}`, 'error');
+              return false;
+            }
+            
+          } catch (error) {
+            log(`Custom webhook notification failed: ${error.message}`, 'error');
+            return false;
+          }
+        }
+        
+        // Main notification function
+        async function sendNotifications() {
+          log('Starting deployment notification process...', 'info');
+          log(`Channels to notify: ${config.channels.join(', ')}`, 'info');
+          
+          const summary = generateDeploymentSummary();
+          log(`Deployment summary: ${JSON.stringify(summary)}`, 'debug');
+          
+          // Send notifications to each configured channel
+          for (const channel of config.channels) {
+            let success = false;
+            
+            try {
+              switch (channel.toLowerCase()) {
+                case 'slack':
+                  success = await sendSlackNotification();
+                  break;
+                case 'email':
+                  success = await sendEmailNotification();
+                  break;
+                case 'teams':
+                  success = await sendTeamsNotification();
+                  break;
+                case 'webhook':
+                  success = await sendWebhookNotification();
+                  break;
+                default:
+                  log(`Unknown notification channel: ${channel}`, 'warning');
+                  success = false;
+              }
+              
+              if (success) {
+                successfulChannels.push(channel);
+              } else {
+                failedChannels.push(channel);
+              }
+              
+            } catch (error) {
+              log(`Notification failed for channel ${channel}: ${error.message}`, 'error');
+              failedChannels.push(channel);
+            }
+          }
+          
+          // Determine overall notification status
+          let notificationStatus;
+          if (successfulChannels.length === config.channels.length) {
+            notificationStatus = 'success';
+          } else if (successfulChannels.length > 0) {
+            notificationStatus = 'partial';
+          } else {
+            notificationStatus = 'failed';
+          }
+          
+          log(`Notification process completed: ${successfulChannels.length}/${config.channels.length} channels successful`, 
+              notificationStatus === 'success' ? 'success' : 'warning');
+          
+          return {
+            status: notificationStatus,
+            successfulChannels,
+            failedChannels,
+            log: notificationLog
+          };
+        }
+        
+        // Execute notifications and set outputs
+        sendNotifications()
+          .then(result => {
+            console.log('::set-output name=notification_status::' + result.status);
+            console.log('::set-output name=channels_notified::' + result.successfulChannels.join(','));
+            console.log('::set-output name=failed_channels::' + result.failedChannels.join(','));
+            
+            // Create detailed report
+            const report = {
+              deployment: {
+                status: config.status,
+                environment: config.environment,
+                url: config.deploymentUrl,
+                id: config.deploymentId,
+                commit: config.commitSha,
+                branch: config.branch,
+                author: config.author
+              },
+              notification: {
+                timestamp: new Date().toISOString(),
+                status: result.status,
+                channels_configured: config.channels,
+                channels_successful: result.successfulChannels,
+                channels_failed: result.failedChannels,
+                custom_message: config.customMessage,
+                mentions: config.mentionUsers
+              },
+              log: result.log
+            };
+            
+            console.log('::set-output name=notification_report::' + JSON.stringify(report));
+            
+            // Save detailed log
+            const logFile = `notification-report-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            fs.writeFileSync(logFile, JSON.stringify(report, null, 2));
+            
+            if (result.status === 'failed') {
+              console.log('⚠️ All notification channels failed, but continuing deployment');
+              // Don't exit with error - notifications are not critical for deployment success
+            }
+          })
+          .catch(error => {
+            console.error('💥 Notification process failed:', error);
+            console.log('::set-output name=notification_status::failed');
+            console.log('::set-output name=notification_report::{"error": "' + error.message + '"}');
+            // Don't exit with error - notifications are not critical for deployment success
+          });
+        EOF
+        
+        # Set environment variables and run notification sender
+        export STATUS="${{ inputs.status }}"
+        export ENVIRONMENT="${{ inputs.environment }}"
+        export DEPLOYMENT_URL="${{ inputs.deployment_url }}"
+        export CHANNELS="${{ inputs.channels }}"
+        export SLACK_WEBHOOK_URL="${{ inputs.slack_webhook_url }}"
+        export EMAIL_TO="${{ inputs.email_to }}"
+        export EMAIL_SMTP_HOST="${{ inputs.email_smtp_host }}"
+        export EMAIL_SMTP_USER="${{ inputs.email_smtp_user }}"
+        export EMAIL_SMTP_PASSWORD="${{ inputs.email_smtp_password }}"
+        export TEAMS_WEBHOOK_URL="${{ inputs.teams_webhook_url }}"
+        export WEBHOOK_URL="${{ inputs.webhook_url }}"
+        export CUSTOM_MESSAGE="${{ inputs.custom_message }}"
+        export INCLUDE_LOGS="${{ inputs.include_logs }}"
+        export MENTION_USERS="${{ inputs.mention_users }}"
+        export DEPLOYMENT_ID="${{ inputs.deployment_id }}"
+        export COMMIT_SHA="${{ inputs.commit_sha }}"
+        export BRANCH="${{ inputs.branch }}"
+        export AUTHOR="${{ inputs.author }}"
+        
+        node notification-sender.js
+
+branding:
+  icon: 'bell'
+  color: 'purple'

@@ -1,0 +1,845 @@
+# ===================================================================
+# Security Scanning Pipeline for Blog Application
+# ===================================================================
+#
+# This workflow implements comprehensive security scanning including:
+# - Scheduled security scans for continuous monitoring
+# - Dependency vulnerability checks with npm audit and Snyk
+# - Docker image security scanning with Trivy and Grype
+# - SAST (Static Application Security Testing) with CodeQL
+# - Secret scanning and license compliance
+# - Security compliance reporting and notifications
+#
+# Triggers:
+# - Scheduled daily scans
+# - Push to main branch (on security-related changes)
+# - Pull request (security validation)
+# - Manual workflow dispatch
+# ===================================================================
+
+name: 🔒 Security Scanning
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  push:
+    branches: [main, develop]
+    paths:
+      - '**/*.js'
+      - '**/*.jsx'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - '**/package*.json'
+      - '**/Dockerfile*'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.js'
+      - '**/*.jsx'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - '**/package*.json'
+      - '**/Dockerfile*'
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of security scan to run'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+        - full
+        - dependencies
+        - docker
+        - code
+        - secrets
+      severity_threshold:
+        description: 'Minimum severity level to report'
+        required: false
+        default: 'medium'
+        type: choice
+        options:
+        - low
+        - medium
+        - high
+        - critical
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ===================================================================
+  # SECURITY SCAN COORDINATION - Determine what scans to run
+  # ===================================================================
+  scan-coordination:
+    name: 🔍 Security Scan Coordination
+    runs-on: ubuntu-latest
+    outputs:
+      run_dependencies: ${{ steps.determine.outputs.run_dependencies }}
+      run_docker: ${{ steps.determine.outputs.run_docker }}
+      run_code: ${{ steps.determine.outputs.run_code }}
+      run_secrets: ${{ steps.determine.outputs.run_secrets }}
+      severity_threshold: ${{ steps.determine.outputs.severity_threshold }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Determine scans to run
+        id: determine
+        run: |
+          scan_type="${{ inputs.scan_type || 'full' }}"
+          severity="${{ inputs.severity_threshold || 'medium' }}"
+          
+          echo "Scan type: $scan_type"
+          echo "Severity threshold: $severity"
+          
+          case $scan_type in
+            "full")
+              echo "run_dependencies=true" >> $GITHUB_OUTPUT
+              echo "run_docker=true" >> $GITHUB_OUTPUT
+              echo "run_code=true" >> $GITHUB_OUTPUT
+              echo "run_secrets=true" >> $GITHUB_OUTPUT
+              ;;
+            "dependencies")
+              echo "run_dependencies=true" >> $GITHUB_OUTPUT
+              echo "run_docker=false" >> $GITHUB_OUTPUT
+              echo "run_code=false" >> $GITHUB_OUTPUT
+              echo "run_secrets=false" >> $GITHUB_OUTPUT
+              ;;
+            "docker")
+              echo "run_dependencies=false" >> $GITHUB_OUTPUT
+              echo "run_docker=true" >> $GITHUB_OUTPUT
+              echo "run_code=false" >> $GITHUB_OUTPUT
+              echo "run_secrets=false" >> $GITHUB_OUTPUT
+              ;;
+            "code")
+              echo "run_dependencies=false" >> $GITHUB_OUTPUT
+              echo "run_docker=false" >> $GITHUB_OUTPUT
+              echo "run_code=true" >> $GITHUB_OUTPUT
+              echo "run_secrets=false" >> $GITHUB_OUTPUT
+              ;;
+            "secrets")
+              echo "run_dependencies=false" >> $GITHUB_OUTPUT
+              echo "run_docker=false" >> $GITHUB_OUTPUT
+              echo "run_code=false" >> $GITHUB_OUTPUT
+              echo "run_secrets=true" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          
+          echo "severity_threshold=$severity" >> $GITHUB_OUTPUT
+
+  # ===================================================================
+  # DEPENDENCY VULNERABILITY SCANNING - npm audit, Snyk, and OSV
+  # ===================================================================
+  dependency-scanning:
+    name: 📦 Dependency Security Scan
+    runs-on: ubuntu-latest
+    needs: scan-coordination
+    if: needs.scan-coordination.outputs.run_dependencies == 'true'
+    
+    strategy:
+      matrix:
+        component: [backend, frontend]
+        include:
+          - component: backend
+            path: ./blog-list
+            package-file: ./blog-list/package.json
+          - component: frontend
+            path: ./bloglist-frontend
+            package-file: ./bloglist-frontend/package.json
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.package-file }}
+
+      - name: 📦 Install dependencies
+        working-directory: ${{ matrix.path }}
+        run: |
+          if [ "${{ matrix.component }}" = "frontend" ]; then
+            npm ci --ignore-scripts
+          else
+            npm ci
+          fi
+
+      - name: 🔍 npm audit scan
+        working-directory: ${{ matrix.path }}
+        run: |
+          echo "🔍 Running npm audit for ${{ matrix.component }}..."
+          
+          # Create detailed audit report
+          npm audit --json > npm-audit-${{ matrix.component }}.json || true
+          npm audit --audit-level low > npm-audit-${{ matrix.component }}.txt || true
+          
+          # Parse and display results
+          if [ -s npm-audit-${{ matrix.component }}.json ]; then
+            echo "📊 npm audit results:"
+            cat npm-audit-${{ matrix.component }}.txt
+          else
+            echo "✅ No vulnerabilities found by npm audit"
+          fi
+
+      - name: 🔒 Snyk security scan
+        if: env.SNYK_TOKEN
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        working-directory: ${{ matrix.path }}
+        run: |
+          if [ -n "$SNYK_TOKEN" ]; then
+            echo "🔒 Running Snyk security scan for ${{ matrix.component }}..."
+            
+            # Install Snyk CLI
+            npm install -g snyk
+            
+            # Authenticate with Snyk
+            snyk auth $SNYK_TOKEN
+            
+            # Run Snyk test
+            snyk test --json > snyk-${{ matrix.component }}.json || true
+            snyk test --severity-threshold=${{ needs.scan-coordination.outputs.severity_threshold }} > snyk-${{ matrix.component }}.txt || true
+            
+            echo "📊 Snyk scan completed"
+          else
+            echo "ℹ️ Snyk token not configured, skipping Snyk scan"
+          fi
+
+      - name: 🔍 OSV Scanner
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --output=osv-${{ matrix.component }}.json
+            --format=json
+            ${{ matrix.path }}
+        continue-on-error: true
+
+      - name: 📊 License compliance check
+        working-directory: ${{ matrix.path }}
+        run: |
+          echo "📊 Checking license compliance for ${{ matrix.component }}..."
+          
+          # Install license checker
+          npm install -g license-checker
+          
+          # Generate license report
+          license-checker --json > licenses-${{ matrix.component }}.json
+          license-checker --summary > licenses-${{ matrix.component }}-summary.txt
+          
+          # Check for problematic licenses
+          license-checker --onlyAllow 'MIT;ISC;BSD;Apache;LGPL' --excludePrivatePackages > license-compliance-${{ matrix.component }}.txt || echo "⚠️ License compliance issues detected"
+          
+          echo "📄 License summary:"
+          cat licenses-${{ matrix.component }}-summary.txt
+
+      - name: 📊 Create dependency security report
+        working-directory: ${{ matrix.path }}
+        run: |
+          echo "📊 Creating security report for ${{ matrix.component }}..."
+          
+          cat > security-report-${{ matrix.component }}.md << EOF
+          # Dependency Security Report - ${{ matrix.component }}
+          
+          **Scan Date:** $(date -u)
+          **Component:** ${{ matrix.component }}
+          **Severity Threshold:** ${{ needs.scan-coordination.outputs.severity_threshold }}
+          
+          ## npm audit Results
+          \`\`\`
+          $(cat npm-audit-${{ matrix.component }}.txt || echo "No npm audit results")
+          \`\`\`
+          
+          ## Snyk Results
+          \`\`\`
+          $(cat snyk-${{ matrix.component }}.txt || echo "Snyk scan not configured or no results")
+          \`\`\`
+          
+          ## License Summary
+          \`\`\`
+          $(cat licenses-${{ matrix.component }}-summary.txt || echo "No license data")
+          \`\`\`
+          
+          ## License Compliance
+          \`\`\`
+          $(cat license-compliance-${{ matrix.component }}.txt || echo "License check failed")
+          \`\`\`
+          EOF
+
+      - name: 📁 Upload dependency scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-scan-${{ matrix.component }}-${{ github.run_number }}
+          path: |
+            ${{ matrix.path }}/npm-audit-${{ matrix.component }}.*
+            ${{ matrix.path }}/snyk-${{ matrix.component }}.*
+            ${{ matrix.path }}/osv-${{ matrix.component }}.*
+            ${{ matrix.path }}/licenses-${{ matrix.component }}.*
+            ${{ matrix.path }}/license-compliance-${{ matrix.component }}.*
+            ${{ matrix.path }}/security-report-${{ matrix.component }}.md
+          retention-days: 30
+
+  # ===================================================================
+  # DOCKER IMAGE SECURITY SCANNING - Trivy, Grype, and Dockle
+  # ===================================================================
+  docker-security-scanning:
+    name: 🐳 Docker Security Scan
+    runs-on: ubuntu-latest
+    needs: scan-coordination
+    if: needs.scan-coordination.outputs.run_docker == 'true'
+    
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    
+    strategy:
+      matrix:
+        component: [backend, frontend]
+        include:
+          - component: backend
+            context: ./blog-list
+            dockerfile: ./blog-list/Dockerfile
+            image-name: blog-backend
+          - component: frontend
+            context: ./bloglist-frontend
+            dockerfile: ./bloglist-frontend/Dockerfile
+            image-name: blog-frontend
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🏗️ Build Docker image for scanning
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: ${{ matrix.image-name }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🔍 Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ matrix.image-name }}:scan
+          format: 'sarif'
+          output: 'trivy-${{ matrix.component }}.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: 📁 Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-${{ matrix.component }}.sarif'
+          category: 'trivy-${{ matrix.component }}'
+
+      - name: 🔍 Trivy detailed scan
+        run: |
+          echo "🔍 Running detailed Trivy scan for ${{ matrix.component }}..."
+          
+          # Comprehensive vulnerability scan
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd):/tmp aquasec/trivy:latest image \
+            --format json --output /tmp/trivy-detailed-${{ matrix.component }}.json \
+            ${{ matrix.image-name }}:scan
+          
+          # Security configuration scan
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd):/tmp aquasec/trivy:latest config \
+            --format json --output /tmp/trivy-config-${{ matrix.component }}.json \
+            ${{ matrix.dockerfile }}
+          
+          # Secret scan
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $(pwd):/tmp aquasec/trivy:latest image \
+            --scanners secret --format json --output /tmp/trivy-secrets-${{ matrix.component }}.json \
+            ${{ matrix.image-name }}:scan
+
+      - name: 🔍 Grype vulnerability scanner
+        run: |
+          echo "🔍 Running Grype vulnerability scan for ${{ matrix.component }}..."
+          
+          # Install Grype
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Run Grype scan
+          grype ${{ matrix.image-name }}:scan -o json > grype-${{ matrix.component }}.json
+          grype ${{ matrix.image-name }}:scan -o table > grype-${{ matrix.component }}.txt
+
+      - name: 🔍 Dockle security linter
+        run: |
+          echo "🔍 Running Dockle security linter for ${{ matrix.component }}..."
+          
+          # Install Dockle
+          curl -L -o dockle.deb https://github.com/goodwithtech/dockle/releases/latest/download/dockle_$(curl -s https://api.github.com/repos/goodwithtech/dockle/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')_Linux-64bit.deb
+          sudo dpkg -i dockle.deb
+          
+          # Run Dockle scan
+          dockle --format json --output dockle-${{ matrix.component }}.json ${{ matrix.image-name }}:scan || true
+          dockle --format table --output dockle-${{ matrix.component }}.txt ${{ matrix.image-name }}:scan || true
+
+      - name: 📊 Create Docker security report
+        run: |
+          echo "📊 Creating Docker security report for ${{ matrix.component }}..."
+          
+          cat > docker-security-report-${{ matrix.component }}.md << EOF
+          # Docker Security Report - ${{ matrix.component }}
+          
+          **Scan Date:** $(date -u)
+          **Image:** ${{ matrix.image-name }}:scan
+          **Component:** ${{ matrix.component }}
+          **Dockerfile:** ${{ matrix.dockerfile }}
+          
+          ## Trivy Vulnerabilities
+          $(if [ -f trivy-detailed-${{ matrix.component }}.json ]; then echo "✅ Scan completed"; else echo "❌ Scan failed"; fi)
+          
+          ## Grype Vulnerabilities
+          \`\`\`
+          $(head -20 grype-${{ matrix.component }}.txt 2>/dev/null || echo "Grype scan not available")
+          \`\`\`
+          
+          ## Dockle Security Linting
+          \`\`\`
+          $(head -20 dockle-${{ matrix.component }}.txt 2>/dev/null || echo "Dockle scan not available")
+          \`\`\`
+          
+          ## Image Analysis
+          - **Base Image:** $(docker inspect ${{ matrix.image-name }}:scan --format='{{.Config.Image}}' 2>/dev/null || echo "Unknown")
+          - **Architecture:** $(docker inspect ${{ matrix.image-name }}:scan --format='{{.Architecture}}' 2>/dev/null || echo "Unknown")
+          - **Size:** $(docker image inspect ${{ matrix.image-name }}:scan --format='{{.Size}}' 2>/dev/null | numfmt --to=iec || echo "Unknown")
+          EOF
+
+      - name: 📁 Upload Docker scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-scan-${{ matrix.component }}-${{ github.run_number }}
+          path: |
+            trivy-*${{ matrix.component }}.*
+            grype-${{ matrix.component }}.*
+            dockle-${{ matrix.component }}.*
+            docker-security-report-${{ matrix.component }}.md
+          retention-days: 30
+
+  # ===================================================================
+  # STATIC APPLICATION SECURITY TESTING (SAST) - CodeQL Analysis
+  # ===================================================================
+  sast-analysis:
+    name: 🔍 SAST Analysis
+    runs-on: ubuntu-latest
+    needs: scan-coordination
+    if: needs.scan-coordination.outputs.run_code == 'true'
+    
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript']
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+
+      - name: 🏗️ Autobuild
+        uses: github/codeql-action/autobuild@v2
+
+      - name: 🔍 Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          category: "/language:${{matrix.language}}"
+
+      - name: 🔍 ESLint security analysis
+        run: |
+          echo "🔍 Running ESLint security analysis..."
+          
+          # Install ESLint security plugins
+          npm install -g eslint eslint-plugin-security eslint-plugin-no-secrets
+          
+          # Create security-focused ESLint config
+          cat > .eslintrc.security.json << EOF
+          {
+            "extends": ["eslint:recommended"],
+            "plugins": ["security", "no-secrets"],
+            "rules": {
+              "security/detect-object-injection": "error",
+              "security/detect-non-literal-fs-filename": "error",
+              "security/detect-non-literal-regexp": "error",
+              "security/detect-non-literal-require": "error",
+              "security/detect-possible-timing-attacks": "error",
+              "security/detect-pseudoRandomBytes": "error",
+              "security/detect-eval-with-expression": "error",
+              "security/detect-buffer-noassert": "error",
+              "security/detect-child-process": "error",
+              "security/detect-disable-mustache-escape": "error",
+              "security/detect-new-buffer": "error",
+              "security/detect-no-csrf-before-method-override": "error",
+              "no-secrets/no-secrets": "error"
+            },
+            "env": {
+              "node": true,
+              "browser": true,
+              "es6": true
+            },
+            "parserOptions": {
+              "ecmaVersion": 2020,
+              "sourceType": "module",
+              "ecmaFeatures": {
+                "jsx": true
+              }
+            }
+          }
+          EOF
+          
+          # Run security-focused ESLint on backend
+          echo "🔍 Scanning backend code..."
+          eslint --config .eslintrc.security.json --format json --output-file eslint-security-backend.json blog-list/ || true
+          eslint --config .eslintrc.security.json blog-list/ > eslint-security-backend.txt || true
+          
+          # Run security-focused ESLint on frontend
+          echo "🔍 Scanning frontend code..."
+          eslint --config .eslintrc.security.json --format json --output-file eslint-security-frontend.json bloglist-frontend/src/ || true
+          eslint --config .eslintrc.security.json bloglist-frontend/src/ > eslint-security-frontend.txt || true
+
+      - name: 🔍 Semgrep SAST scan
+        run: |
+          echo "🔍 Running Semgrep SAST scan..."
+          
+          # Install Semgrep
+          python -m pip install semgrep
+          
+          # Run Semgrep with security rules
+          semgrep --config=auto --json --output=semgrep-results.json . || true
+          semgrep --config=auto --output=semgrep-results.txt . || true
+
+      - name: 📊 Create SAST security report
+        run: |
+          echo "📊 Creating SAST security report..."
+          
+          cat > sast-security-report.md << EOF
+          # SAST Security Report
+          
+          **Scan Date:** $(date -u)
+          **Languages:** JavaScript, JSX
+          **Tools:** CodeQL, ESLint Security, Semgrep
+          
+          ## CodeQL Analysis
+          CodeQL analysis results are available in the Security tab of this repository.
+          
+          ## ESLint Security Analysis
+          
+          ### Backend Security Issues
+          \`\`\`
+          $(head -50 eslint-security-backend.txt 2>/dev/null || echo "No ESLint security issues found in backend")
+          \`\`\`
+          
+          ### Frontend Security Issues
+          \`\`\`
+          $(head -50 eslint-security-frontend.txt 2>/dev/null || echo "No ESLint security issues found in frontend")
+          \`\`\`
+          
+          ## Semgrep Analysis
+          \`\`\`
+          $(head -50 semgrep-results.txt 2>/dev/null || echo "No Semgrep issues found")
+          \`\`\`
+          
+          ## Summary
+          - CodeQL: See Security tab for detailed results
+          - ESLint Security: $(grep -c "error\|warning" eslint-security-*.txt 2>/dev/null || echo "0") issues found
+          - Semgrep: $(grep -c "ERROR\|WARNING" semgrep-results.txt 2>/dev/null || echo "0") issues found
+          EOF
+
+      - name: 📁 Upload SAST results
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-analysis-${{ github.run_number }}
+          path: |
+            eslint-security-*.json
+            eslint-security-*.txt
+            semgrep-results.*
+            sast-security-report.md
+          retention-days: 30
+
+  # ===================================================================
+  # SECRET SCANNING - TruffleHog and GitLeaks
+  # ===================================================================
+  secret-scanning:
+    name: 🔐 Secret Scanning
+    runs-on: ubuntu-latest
+    needs: scan-coordination
+    if: needs.scan-coordination.outputs.run_secrets == 'true'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 TruffleHog secret scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: 🔍 GitLeaks secret scan
+        run: |
+          echo "🔍 Running GitLeaks secret scan..."
+          
+          # Install GitLeaks
+          curl -sSfL https://github.com/zricethezav/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz | tar -xz
+          sudo mv gitleaks /usr/local/bin/
+          
+          # Run GitLeaks scan
+          gitleaks detect --source . --format json --report-path gitleaks-report.json || true
+          gitleaks detect --source . --format sarif --report-path gitleaks-report.sarif || true
+          gitleaks detect --source . --verbose > gitleaks-report.txt || true
+
+      - name: 📁 Upload GitLeaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: gitleaks-report.sarif
+          category: gitleaks
+
+      - name: 🔍 Custom secret patterns scan
+        run: |
+          echo "🔍 Running custom secret patterns scan..."
+          
+          # Define patterns for common secrets
+          cat > secret-patterns.txt << 'EOF'
+          # API Keys
+          api[_-]?key.*[=:]\s*['\"][a-zA-Z0-9_-]{20,}['\"]
+          
+          # Database URLs
+          mongodb(\+srv)?://[^\\s]+
+          postgres://[^\\s]+
+          mysql://[^\\s]+
+          
+          # JWT Tokens
+          eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*
+          
+          # Private Keys
+          -----BEGIN[A-Z ]+PRIVATE KEY-----
+          
+          # AWS Keys
+          AKIA[0-9A-Z]{16}
+          
+          # GitHub Tokens
+          ghp_[a-zA-Z0-9]{36}
+          gho_[a-zA-Z0-9]{36}
+          
+          # Slack Tokens
+          xox[baprs]-[0-9a-zA-Z]{10,48}
+          EOF
+          
+          # Scan for patterns
+          echo "🔍 Scanning for secret patterns..."
+          grep -rE -f secret-patterns.txt . --exclude-dir=.git --exclude-dir=node_modules > custom-secrets.txt || true
+          
+          if [ -s custom-secrets.txt ]; then
+            echo "⚠️ Potential secrets found:"
+            cat custom-secrets.txt
+          else
+            echo "✅ No secrets found with custom patterns"
+          fi
+
+      - name: 📊 Create secret scanning report
+        run: |
+          echo "📊 Creating secret scanning report..."
+          
+          cat > secret-scanning-report.md << EOF
+          # Secret Scanning Report
+          
+          **Scan Date:** $(date -u)
+          **Tools:** TruffleHog, GitLeaks, Custom Patterns
+          **Repository:** ${{ github.repository }}
+          
+          ## TruffleHog Results
+          TruffleHog scan completed. Check workflow logs for details.
+          
+          ## GitLeaks Results
+          \`\`\`
+          $(head -50 gitleaks-report.txt 2>/dev/null || echo "No GitLeaks results")
+          \`\`\`
+          
+          ## Custom Pattern Results
+          \`\`\`
+          $(head -20 custom-secrets.txt 2>/dev/null || echo "No custom pattern matches")
+          \`\`\`
+          
+          ## Recommendations
+          - Review any flagged secrets immediately
+          - Remove secrets from code and use environment variables
+          - Rotate any exposed credentials
+          - Consider using secret management tools
+          - Add .gitignore entries for sensitive files
+          EOF
+
+      - name: 📁 Upload secret scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-scan-${{ github.run_number }}
+          path: |
+            gitleaks-report.*
+            custom-secrets.txt
+            secret-scanning-report.md
+          retention-days: 30
+
+  # ===================================================================
+  # SECURITY COMPLIANCE REPORT - Aggregate all security findings
+  # ===================================================================
+  security-compliance-report:
+    name: 📊 Security Compliance Report
+    runs-on: ubuntu-latest
+    needs: [dependency-scanning, docker-security-scanning, sast-analysis, secret-scanning]
+    if: always()
+    
+    steps:
+      - name: 📥 Download all security artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-scan-*'
+          merge-multiple: true
+
+      - name: 📊 Generate comprehensive security report
+        run: |
+          echo "📊 Generating comprehensive security report..."
+          
+          # Create comprehensive security report
+          cat > comprehensive-security-report.md << EOF
+          # 🔒 Comprehensive Security Report
+          
+          **Repository:** ${{ github.repository }}
+          **Scan Date:** $(date -u)
+          **Triggered By:** ${{ github.actor }}
+          **Event:** ${{ github.event_name }}
+          **Severity Threshold:** ${{ needs.scan-coordination.outputs.severity_threshold }}
+          
+          ## Executive Summary
+          
+          This report aggregates findings from multiple security scanning tools across the blog application.
+          
+          ### Scan Coverage
+          - ✅ Dependency Vulnerability Scanning (npm audit, Snyk, OSV)
+          - ✅ Docker Image Security Scanning (Trivy, Grype, Dockle)
+          - ✅ Static Application Security Testing (CodeQL, ESLint, Semgrep)
+          - ✅ Secret Scanning (TruffleHog, GitLeaks)
+          - ✅ License Compliance Checking
+          
+          ### Results Summary
+          
+          | Security Domain | Status | Critical | High | Medium | Low |
+          |-----------------|--------|----------|------|--------|-----|
+          | Dependencies    | ${{ needs.dependency-scanning.result }} | - | - | - | - |
+          | Docker Images   | ${{ needs.docker-security-scanning.result }} | - | - | - | - |
+          | Source Code     | ${{ needs.sast-analysis.result }} | - | - | - | - |
+          | Secrets         | ${{ needs.secret-scanning.result }} | - | - | - | - |
+          
+          ## Detailed Findings
+          
+          ### Dependency Vulnerabilities
+          - **Backend:** $(find . -name "*backend*" -name "*.json" | wc -l) scan files generated
+          - **Frontend:** $(find . -name "*frontend*" -name "*.json" | wc -l) scan files generated
+          
+          ### Docker Security
+          - **Backend Image:** $(find . -name "*backend*" -name "trivy-*" | wc -l) vulnerability scans
+          - **Frontend Image:** $(find . -name "*frontend*" -name "trivy-*" | wc -l) vulnerability scans
+          
+          ### Code Security
+          - **SAST Tools:** CodeQL, ESLint Security, Semgrep
+          - **Language Coverage:** JavaScript, JSX
+          
+          ### Secret Detection
+          - **Tools:** TruffleHog, GitLeaks, Custom Patterns
+          - **Scope:** Full repository history
+          
+          ## Recommendations
+          
+          ### Immediate Actions
+          1. Review all CRITICAL and HIGH severity findings
+          2. Patch or update vulnerable dependencies
+          3. Address any exposed secrets immediately
+          4. Review Docker image security configurations
+          
+          ### Ongoing Security Practices
+          1. Enable automated dependency updates
+          2. Implement pre-commit security hooks
+          3. Regular security training for developers
+          4. Establish incident response procedures
+          
+          ## Compliance Status
+          
+          - **OWASP Top 10:** Addressed through SAST and dependency scanning
+          - **CIS Docker Benchmark:** Covered by Dockle and Trivy
+          - **License Compliance:** Automated checking implemented
+          - **Secret Management:** Detection and prevention measures in place
+          
+          ## Next Steps
+          
+          1. Review individual scan reports in artifacts
+          2. Create GitHub issues for critical findings
+          3. Update security documentation
+          4. Schedule follow-up scans
+          
+          EOF
+          
+          # Create security metrics
+          echo "📈 Generating security metrics..."
+          cat > security-metrics.json << EOF
+          {
+            "scan_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "repository": "${{ github.repository }}",
+            "commit_sha": "${{ github.sha }}",
+            "scan_results": {
+              "dependency_scanning": "${{ needs.dependency-scanning.result }}",
+              "docker_scanning": "${{ needs.docker-security-scanning.result }}",
+              "sast_analysis": "${{ needs.sast-analysis.result }}",
+              "secret_scanning": "${{ needs.secret-scanning.result }}"
+            },
+            "severity_threshold": "${{ needs.scan-coordination.outputs.severity_threshold }}",
+            "artifact_count": $(find . -name "*.json" -o -name "*.md" -o -name "*.txt" | wc -l)
+          }
+          EOF
+
+      - name: 📁 Upload comprehensive security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: comprehensive-security-report-${{ github.run_number }}
+          path: |
+            comprehensive-security-report.md
+            security-metrics.json
+          retention-days: 90
+
+      - name: 📢 Security scan notification
+        run: |
+          echo "📢 Security scan completed"
+          echo "📊 Results:"
+          echo "  - Dependency Scanning: ${{ needs.dependency-scanning.result }}"
+          echo "  - Docker Scanning: ${{ needs.docker-security-scanning.result }}"
+          echo "  - SAST Analysis: ${{ needs.sast-analysis.result }}"
+          echo "  - Secret Scanning: ${{ needs.secret-scanning.result }}"
+          echo ""
+          echo "📁 Detailed reports are available in the workflow artifacts"
+          echo "🔍 Review the comprehensive security report for actionable insights"

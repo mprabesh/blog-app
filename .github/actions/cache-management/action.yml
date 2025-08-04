@@ -1,0 +1,555 @@
+name: 'Cache Management'
+description: 'Redis cache operations with cache warming strategies and invalidation patterns for blog application'
+author: 'Blog App DevOps Team'
+
+inputs:
+  action:
+    description: 'Cache action to perform (warm, clear, invalidate, status, configure)'
+    required: true
+    default: 'status'
+  redis_url:
+    description: 'Redis connection URL'
+    required: true
+  cache_patterns:
+    description: 'Comma-separated list of cache patterns to manage'
+    required: false
+    default: 'blogs:*,users:*,sessions:*'
+  warming_strategy:
+    description: 'Cache warming strategy (eager, lazy, scheduled)'
+    required: false
+    default: 'eager'
+  api_base_url:
+    description: 'Base URL for API endpoints (for cache warming)'
+    required: false
+  ttl:
+    description: 'Default TTL in seconds for cache entries'
+    required: false
+    default: '3600'
+  max_memory:
+    description: 'Maximum memory usage in MB for Redis'
+    required: false
+    default: '100'
+  eviction_policy:
+    description: 'Memory eviction policy'
+    required: false
+    default: 'allkeys-lru'
+  timeout:
+    description: 'Timeout in seconds for cache operations'
+    required: false
+    default: '30'
+
+outputs:
+  cache_status:
+    description: 'Status of the cache operation (success, failed, warning)'
+    value: ${{ steps.cache-management.outputs.cache_status }}
+  operations_performed:
+    description: 'Number of cache operations performed'
+    value: ${{ steps.cache-management.outputs.operations_performed }}
+  cache_size:
+    description: 'Current cache size in MB'
+    value: ${{ steps.cache-management.outputs.cache_size }}
+  hit_ratio:
+    description: 'Cache hit ratio percentage'
+    value: ${{ steps.cache-management.outputs.hit_ratio }}
+  memory_usage:
+    description: 'Current memory usage in MB'
+    value: ${{ steps.cache-management.outputs.memory_usage }}
+  cache_report:
+    description: 'Detailed cache management report'
+    value: ${{ steps.cache-management.outputs.cache_report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js for cache management
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install cache management dependencies
+      shell: bash
+      run: |
+        npm install -g redis axios
+
+    - name: Execute cache management
+      id: cache-management
+      shell: bash
+      run: |
+        # Create comprehensive cache management script
+        cat > cache-manager.js << 'EOF'
+        const redis = require('redis');
+        const axios = require('axios');
+        
+        // Cache management configuration
+        const config = {
+          action: process.env.ACTION,
+          redisUrl: process.env.REDIS_URL,
+          cachePatterns: process.env.CACHE_PATTERNS.split(',').map(p => p.trim()),
+          warmingStrategy: process.env.WARMING_STRATEGY,
+          apiBaseUrl: process.env.API_BASE_URL,
+          ttl: parseInt(process.env.TTL),
+          maxMemory: parseInt(process.env.MAX_MEMORY) * 1024 * 1024, // Convert to bytes
+          evictionPolicy: process.env.EVICTION_POLICY,
+          timeout: parseInt(process.env.TIMEOUT) * 1000
+        };
+        
+        let client;
+        let operationsPerformed = 0;
+        let cacheLog = [];
+        
+        // Utility functions
+        function log(message, level = 'info') {
+          const timestamp = new Date().toISOString();
+          const logEntry = { timestamp, level, message };
+          cacheLog.push(logEntry);
+          
+          const emoji = {
+            info: 'ℹ️',
+            success: '✅',
+            warning: '⚠️',
+            error: '❌',
+            debug: '🔍'
+          };
+          
+          console.log(`${emoji[level] || 'ℹ️'} [${timestamp}] ${message}`);
+        }
+        
+        // Connect to Redis
+        async function connectRedis() {
+          try {
+            log('Connecting to Redis...', 'info');
+            client = redis.createClient({ 
+              url: config.redisUrl,
+              socket: {
+                connectTimeout: config.timeout
+              }
+            });
+            
+            client.on('error', (err) => {
+              log(`Redis client error: ${err.message}`, 'error');
+            });
+            
+            await client.connect();
+            await client.ping();
+            
+            log('Redis connection established successfully', 'success');
+            return true;
+          } catch (error) {
+            log(`Redis connection failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Get Redis info and statistics
+        async function getRedisInfo() {
+          try {
+            const info = await client.info();
+            const infoLines = info.split('\r\n');
+            const infoObj = {};
+            
+            infoLines.forEach(line => {
+              if (line.includes(':') && !line.startsWith('#')) {
+                const [key, value] = line.split(':');
+                infoObj[key] = value;
+              }
+            });
+            
+            return {
+              version: infoObj.redis_version || 'unknown',
+              uptime: parseInt(infoObj.uptime_in_seconds) || 0,
+              connected_clients: parseInt(infoObj.connected_clients) || 0,
+              used_memory: parseInt(infoObj.used_memory) || 0,
+              used_memory_human: infoObj.used_memory_human || '0B',
+              keyspace_hits: parseInt(infoObj.keyspace_hits) || 0,
+              keyspace_misses: parseInt(infoObj.keyspace_misses) || 0,
+              total_commands_processed: parseInt(infoObj.total_commands_processed) || 0
+            };
+          } catch (error) {
+            log(`Failed to get Redis info: ${error.message}`, 'error');
+            return {};
+          }
+        }
+        
+        // Calculate cache hit ratio
+        function calculateHitRatio(info) {
+          const hits = info.keyspace_hits || 0;
+          const misses = info.keyspace_misses || 0;
+          const total = hits + misses;
+          
+          if (total === 0) return 0;
+          return ((hits / total) * 100).toFixed(2);
+        }
+        
+        // Configure Redis settings
+        async function configureRedis() {
+          try {
+            log('Configuring Redis settings...', 'info');
+            
+            // Set maximum memory
+            await client.configSet('maxmemory', config.maxMemory.toString());
+            log(`Set maxmemory to ${(config.maxMemory / 1024 / 1024).toFixed(0)}MB`, 'debug');
+            
+            // Set eviction policy
+            await client.configSet('maxmemory-policy', config.evictionPolicy);
+            log(`Set eviction policy to ${config.evictionPolicy}`, 'debug');
+            
+            // Enable keyspace notifications for cache invalidation
+            await client.configSet('notify-keyspace-events', 'Ex');
+            log('Enabled keyspace notifications for expiration events', 'debug');
+            
+            operationsPerformed += 3;
+            log('Redis configuration completed', 'success');
+            
+          } catch (error) {
+            log(`Redis configuration failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Clear cache by patterns
+        async function clearCache() {
+          try {
+            log('Starting cache clearing operation...', 'info');
+            let totalCleared = 0;
+            
+            for (const pattern of config.cachePatterns) {
+              log(`Clearing cache pattern: ${pattern}`, 'info');
+              
+              // Get all keys matching the pattern
+              const keys = await client.keys(pattern);
+              
+              if (keys.length > 0) {
+                // Delete keys in batches to avoid blocking Redis
+                const batchSize = 100;
+                for (let i = 0; i < keys.length; i += batchSize) {
+                  const batch = keys.slice(i, i + batchSize);
+                  await client.del(batch);
+                  totalCleared += batch.length;
+                  operationsPerformed++;
+                  
+                  log(`Cleared ${batch.length} keys (batch ${Math.floor(i/batchSize) + 1})`, 'debug');
+                }
+                
+                log(`Cleared ${keys.length} keys for pattern ${pattern}`, 'success');
+              } else {
+                log(`No keys found for pattern ${pattern}`, 'info');
+              }
+            }
+            
+            log(`Cache clearing completed: ${totalCleared} keys cleared`, 'success');
+            return totalCleared;
+            
+          } catch (error) {
+            log(`Cache clearing failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Invalidate specific cache entries
+        async function invalidateCache() {
+          try {
+            log('Starting cache invalidation...', 'info');
+            let totalInvalidated = 0;
+            
+            // Common cache invalidation patterns for blog app
+            const invalidationPatterns = [
+              'blogs:list:*',      // Blog listing caches
+              'blogs:count:*',     // Blog count caches
+              'users:profile:*',   // User profile caches
+              'api:response:*'     // API response caches
+            ];
+            
+            for (const pattern of invalidationPatterns) {
+              const keys = await client.keys(pattern);
+              
+              if (keys.length > 0) {
+                await client.del(keys);
+                totalInvalidated += keys.length;
+                operationsPerformed++;
+                log(`Invalidated ${keys.length} keys for pattern ${pattern}`, 'success');
+              }
+            }
+            
+            // Set invalidation timestamp
+            await client.set('cache:invalidated_at', new Date().toISOString(), { EX: config.ttl });
+            operationsPerformed++;
+            
+            log(`Cache invalidation completed: ${totalInvalidated} keys invalidated`, 'success');
+            return totalInvalidated;
+            
+          } catch (error) {
+            log(`Cache invalidation failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Warm cache with common data
+        async function warmCache() {
+          try {
+            log(`Starting cache warming with ${config.warmingStrategy} strategy...`, 'info');
+            
+            if (!config.apiBaseUrl) {
+              log('No API base URL provided, skipping cache warming', 'warning');
+              return 0;
+            }
+            
+            let totalWarmed = 0;
+            
+            // Define cache warming endpoints
+            const warmingEndpoints = [
+              { 
+                url: `${config.apiBaseUrl}/api/blogs`,
+                cacheKey: 'blogs:list:all',
+                ttl: config.ttl 
+              },
+              {
+                url: `${config.apiBaseUrl}/api/users`,
+                cacheKey: 'users:list:all',
+                ttl: config.ttl
+              }
+            ];
+            
+            for (const endpoint of warmingEndpoints) {
+              try {
+                log(`Warming cache for: ${endpoint.url}`, 'info');
+                
+                // Check if data is already cached
+                const existingData = await client.get(endpoint.cacheKey);
+                if (existingData && config.warmingStrategy === 'lazy') {
+                  log(`Cache already exists for ${endpoint.cacheKey}, skipping`, 'debug');
+                  continue;
+                }
+                
+                // Fetch data from API
+                const response = await axios.get(endpoint.url, {
+                  timeout: config.timeout,
+                  headers: {
+                    'User-Agent': 'CacheWarmer/1.0'
+                  }
+                });
+                
+                if (response.status === 200) {
+                  // Cache the response data
+                  await client.setEx(
+                    endpoint.cacheKey,
+                    endpoint.ttl,
+                    JSON.stringify(response.data)
+                  );
+                  
+                  totalWarmed++;
+                  operationsPerformed++;
+                  log(`Cached data for ${endpoint.cacheKey}`, 'success');
+                  
+                  // Add metadata
+                  await client.setEx(
+                    `${endpoint.cacheKey}:meta`,
+                    endpoint.ttl,
+                    JSON.stringify({
+                      cached_at: new Date().toISOString(),
+                      size: JSON.stringify(response.data).length,
+                      strategy: config.warmingStrategy
+                    })
+                  );
+                  
+                } else {
+                  log(`Failed to fetch data from ${endpoint.url}: HTTP ${response.status}`, 'warning');
+                }
+                
+              } catch (error) {
+                log(`Failed to warm cache for ${endpoint.url}: ${error.message}`, 'warning');
+              }
+            }
+            
+            // Set cache warming timestamp
+            await client.setEx('cache:warmed_at', config.ttl, new Date().toISOString());
+            operationsPerformed++;
+            
+            log(`Cache warming completed: ${totalWarmed} entries warmed`, 'success');
+            return totalWarmed;
+            
+          } catch (error) {
+            log(`Cache warming failed: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Get cache status and statistics
+        async function getCacheStatus() {
+          try {
+            log('Getting cache status...', 'info');
+            
+            const info = await getRedisInfo();
+            const hitRatio = calculateHitRatio(info);
+            
+            // Count keys by pattern
+            const keyStats = {};
+            for (const pattern of config.cachePatterns) {
+              const keys = await client.keys(pattern);
+              keyStats[pattern] = keys.length;
+            }
+            
+            // Get total key count
+            const totalKeys = await client.dbSize();
+            
+            const status = {
+              connected: true,
+              redis_version: info.version,
+              uptime_seconds: info.uptime,
+              connected_clients: info.connected_clients,
+              used_memory_bytes: info.used_memory,
+              used_memory_human: info.used_memory_human,
+              total_commands_processed: info.total_commands_processed,
+              keyspace_hits: info.keyspace_hits,
+              keyspace_misses: info.keyspace_misses,
+              hit_ratio_percent: parseFloat(hitRatio),
+              total_keys: totalKeys,
+              keys_by_pattern: keyStats,
+              last_warmed: await client.get('cache:warmed_at'),
+              last_invalidated: await client.get('cache:invalidated_at')
+            };
+            
+            log(`Cache status retrieved: ${totalKeys} total keys, ${hitRatio}% hit ratio`, 'success');
+            return status;
+            
+          } catch (error) {
+            log(`Failed to get cache status: ${error.message}`, 'error');
+            throw error;
+          }
+        }
+        
+        // Main cache management function
+        async function manageCache() {
+          let status = 'failed';
+          let cacheSize = 0;
+          let hitRatio = 0;
+          let memoryUsage = 0;
+          
+          try {
+            await connectRedis();
+            
+            switch (config.action) {
+              case 'configure':
+                await configureRedis();
+                status = 'success';
+                break;
+                
+              case 'warm':
+                operationsPerformed = await warmCache();
+                status = 'success';
+                break;
+                
+              case 'clear':
+                operationsPerformed = await clearCache();
+                status = 'success';
+                break;
+                
+              case 'invalidate':
+                operationsPerformed = await invalidateCache();
+                status = 'success';
+                break;
+                
+              case 'status':
+                const cacheStatus = await getCacheStatus();
+                operationsPerformed = 1;
+                hitRatio = cacheStatus.hit_ratio_percent;
+                memoryUsage = Math.round(cacheStatus.used_memory_bytes / 1024 / 1024);
+                cacheSize = cacheStatus.total_keys;
+                status = 'success';
+                break;
+                
+              default:
+                throw new Error(`Unknown action: ${config.action}`);
+            }
+            
+            // Get final statistics
+            if (config.action !== 'status') {
+              const finalStatus = await getCacheStatus();
+              hitRatio = finalStatus.hit_ratio_percent;
+              memoryUsage = Math.round(finalStatus.used_memory_bytes / 1024 / 1024);
+              cacheSize = finalStatus.total_keys;
+            }
+            
+          } catch (error) {
+            log(`Cache management failed: ${error.message}`, 'error');
+            status = 'failed';
+            throw error;
+          } finally {
+            if (client) {
+              await client.quit();
+              log('Redis connection closed', 'debug');
+            }
+          }
+          
+          return {
+            status,
+            operationsPerformed,
+            cacheSize,
+            hitRatio,
+            memoryUsage,
+            log: cacheLog
+          };
+        }
+        
+        // Execute cache management and set outputs
+        manageCache()
+          .then(result => {
+            console.log('::set-output name=cache_status::' + result.status);
+            console.log('::set-output name=operations_performed::' + result.operationsPerformed);
+            console.log('::set-output name=cache_size::' + result.cacheSize);
+            console.log('::set-output name=hit_ratio::' + result.hitRatio);
+            console.log('::set-output name=memory_usage::' + result.memoryUsage);
+            
+            // Create detailed report
+            const report = {
+              action: config.action,
+              timestamp: new Date().toISOString(),
+              status: result.status,
+              operations_performed: result.operationsPerformed,
+              cache_size: result.cacheSize,
+              hit_ratio: result.hitRatio,
+              memory_usage_mb: result.memoryUsage,
+              configuration: {
+                patterns: config.cachePatterns,
+                warming_strategy: config.warmingStrategy,
+                ttl: config.ttl,
+                max_memory_mb: Math.round(config.maxMemory / 1024 / 1024),
+                eviction_policy: config.evictionPolicy
+              },
+              log: result.log
+            };
+            
+            console.log('::set-output name=cache_report::' + JSON.stringify(report));
+            
+            // Save detailed log
+            const fs = require('fs');
+            const logFile = `cache-management-${config.action}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            fs.writeFileSync(logFile, JSON.stringify(report, null, 2));
+            
+            if (result.status === 'failed') {
+              process.exit(1);
+            }
+          })
+          .catch(error => {
+            console.error('💥 Cache management failed:', error);
+            console.log('::set-output name=cache_status::failed');
+            console.log('::set-output name=cache_report::{"error": "' + error.message + '"}');
+            process.exit(1);
+          });
+        EOF
+        
+        # Set environment variables and run cache management
+        export ACTION="${{ inputs.action }}"
+        export REDIS_URL="${{ inputs.redis_url }}"
+        export CACHE_PATTERNS="${{ inputs.cache_patterns }}"
+        export WARMING_STRATEGY="${{ inputs.warming_strategy }}"
+        export API_BASE_URL="${{ inputs.api_base_url }}"
+        export TTL="${{ inputs.ttl }}"
+        export MAX_MEMORY="${{ inputs.max_memory }}"
+        export EVICTION_POLICY="${{ inputs.eviction_policy }}"
+        export TIMEOUT="${{ inputs.timeout }}"
+        
+        node cache-manager.js
+
+branding:
+  icon: 'zap'
+  color: 'orange'
