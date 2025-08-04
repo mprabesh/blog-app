@@ -1,0 +1,213 @@
+# ===================================================================
+# Main Orchestration Playbook for Blog Application
+# ===================================================================
+#
+# This playbook orchestrates the complete deployment and management
+# of the blog application infrastructure across all environments.
+#
+# Usage:
+#   ansible-playbook -i inventory/production site.yml
+#   ansible-playbook -i inventory/staging site.yml
+#   ansible-playbook -i inventory/development site.yml --tags setup
+#
+# ===================================================================
+
+---
+- name: 🏗️ Blog Application Infrastructure Management
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    blog_app_version: "{{ app_version | default('latest') }}"
+    deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+    
+  pre_tasks:
+    - name: 📋 Display deployment information
+      debug:
+        msg:
+          - "=== Blog Application Deployment ==="
+          - "Environment: {{ app_environment }}"
+          - "Version: {{ blog_app_version }}"
+          - "Timestamp: {{ deployment_timestamp }}"
+          - "Target hosts: {{ ansible_play_hosts | length }}"
+          - "========================================="
+      
+    - name: ✅ Validate deployment prerequisites
+      assert:
+        that:
+          - app_environment is defined
+          - app_environment in ['development', 'staging', 'production']
+          - ansible_os_family == 'Debian'
+        fail_msg: "Prerequisites not met. Check environment variables and OS compatibility."
+        success_msg: "Prerequisites validated successfully"
+      tags: always
+
+# ===================================================================
+# INFRASTRUCTURE PROVISIONING
+# ===================================================================
+- name: 🔧 Infrastructure Provisioning
+  hosts: all
+  become: yes
+  serial: "{{ rolling_update_batch | default('100%') }}"
+  
+  roles:
+    - role: common
+      tags: ['setup', 'common', 'security']
+      when: provision_infrastructure | default(true)
+      
+    - role: docker
+      tags: ['setup', 'docker', 'containers']
+      when: provision_infrastructure | default(true)
+
+# ===================================================================
+# DATABASE INFRASTRUCTURE
+# ===================================================================
+- name: 🗄️ Database Infrastructure
+  hosts: database
+  become: yes
+  serial: 1  # Database deployment should be serial
+  
+  roles:
+    - role: mongodb
+      tags: ['setup', 'database', 'mongodb']
+      when: setup_database | default(true)
+
+# ===================================================================
+# CACHE INFRASTRUCTURE  
+# ===================================================================
+- name: 🔴 Cache Infrastructure
+  hosts: cache
+  become: yes
+  
+  roles:
+    - role: redis
+      tags: ['setup', 'cache', 'redis']
+      when: setup_cache | default(true)
+
+# ===================================================================
+# WEB INFRASTRUCTURE
+# ===================================================================
+- name: 🌐 Web Infrastructure
+  hosts: web
+  become: yes
+  serial: "{{ web_rolling_update_batch | default('50%') }}"
+  
+  roles:
+    - role: nginx
+      tags: ['setup', 'web', 'nginx', 'ssl']
+      when: setup_web_server | default(true)
+
+# ===================================================================
+# APPLICATION DEPLOYMENT
+# ===================================================================
+- name: 🚀 Application Deployment
+  hosts: app
+  become: yes
+  serial: "{{ app_rolling_update_batch | default('25%') }}"
+  
+  pre_tasks:
+    - name: 🔍 Pre-deployment health check
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ app_port | default(8081) }}/api/ping"
+        method: GET
+        status_code: [200, 404]  # 404 is OK if app not yet deployed
+      ignore_errors: yes
+      register: pre_deployment_health
+      tags: ['deploy', 'health-check']
+  
+  roles:
+    - role: application
+      tags: ['deploy', 'application', 'update']
+      
+  post_tasks:
+    - name: ✅ Post-deployment health check
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ app_port | default(8081) }}/api/ping"
+        method: GET
+        status_code: 200
+        timeout: 30
+      retries: 5
+      delay: 10
+      tags: ['deploy', 'health-check']
+      
+    - name: 📊 Deployment verification
+      debug:
+        msg:
+          - "Deployment completed successfully"
+          - "Application version: {{ blog_app_version }}"
+          - "Health check: PASSED"
+          - "URL: http://{{ ansible_default_ipv4.address }}:{{ app_port | default(8081) }}"
+      tags: ['deploy', 'verify']
+
+# ===================================================================
+# MONITORING INFRASTRUCTURE
+# ===================================================================
+- name: 📊 Monitoring Infrastructure
+  hosts: monitoring
+  become: yes
+  
+  roles:
+    - role: monitoring
+      tags: ['setup', 'monitoring', 'metrics', 'alerting']
+      when: setup_monitoring | default(true)
+
+# ===================================================================
+# POST-DEPLOYMENT TASKS
+# ===================================================================
+- name: 🔧 Post-Deployment Tasks
+  hosts: all
+  become: yes
+  
+  tasks:
+    - name: 🗄️ Database migration check
+      uri:
+        url: "http://{{ groups['app'][0] }}:{{ app_port | default(8081) }}/api/ping"
+        method: GET
+        status_code: 200
+      delegate_to: "{{ groups['app'][0] }}"
+      run_once: true
+      tags: ['deploy', 'migration']
+      
+    - name: 🔴 Cache warming
+      uri:
+        url: "http://{{ groups['app'][0] }}:{{ app_port | default(8081) }}/api/blogs"
+        method: GET
+        status_code: 200
+      delegate_to: "{{ groups['app'][0] }}"
+      run_once: true
+      tags: ['deploy', 'cache']
+      
+    - name: 📝 Generate deployment report
+      template:
+        src: deployment-report.j2
+        dest: "/tmp/deployment-report-{{ deployment_timestamp }}.txt"
+      delegate_to: localhost
+      run_once: true
+      tags: ['deploy', 'report']
+
+# ===================================================================
+# CLEANUP AND NOTIFICATIONS
+# ===================================================================
+- name: 🧹 Cleanup and Notifications
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: 📢 Deployment notification
+      debug:
+        msg:
+          - "🎉 Deployment completed successfully!"
+          - "Environment: {{ app_environment }}"
+          - "Version: {{ blog_app_version }}"
+          - "Timestamp: {{ deployment_timestamp }}"
+          - "Hosts deployed: {{ groups['all'] | length }}"
+      tags: always
+      
+    - name: 📁 Archive deployment logs
+      archive:
+        path: "/tmp/deployment-report-{{ deployment_timestamp }}.txt"
+        dest: "/tmp/deployment-{{ app_environment }}-{{ deployment_timestamp }}.tar.gz"
+        remove: yes
+      ignore_errors: yes
+      tags: ['deploy', 'cleanup']

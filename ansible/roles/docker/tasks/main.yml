@@ -1,0 +1,141 @@
+# ===================================================================
+# Docker Role - Docker and Docker Compose Installation
+# ===================================================================
+
+---
+- name: 🐳 Remove old Docker packages
+  apt:
+    name:
+      - docker
+      - docker-engine
+      - docker.io
+      - containerd
+      - runc
+    state: absent
+  tags: docker
+
+- name: 📦 Install Docker prerequisites
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: yes
+  tags: docker
+
+- name: 🔑 Add Docker GPG key
+  apt_key:
+    url: "{{ docker_gpg_key_url }}"
+    state: present
+  tags: docker
+
+- name: 📂 Add Docker repository
+  apt_repository:
+    repo: "{{ docker_repository }}"
+    state: present
+    update_cache: yes
+  tags: docker
+
+- name: 🐳 Install Docker packages
+  apt:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: yes
+  notify: restart docker
+  tags: docker
+
+- name: 🔄 Start and enable Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  tags: docker
+
+- name: 👥 Add users to docker group
+  user:
+    name: "{{ item }}"
+    groups: docker
+    append: yes
+  loop: "{{ docker_users }}"
+  when: docker_users is defined
+  tags: docker
+
+- name: 🔧 Configure Docker daemon
+  template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    backup: yes
+  notify: restart docker
+  tags: docker
+
+- name: 🐳 Install Docker Compose
+  get_url:
+    url: "{{ docker_compose_url }}"
+    dest: /usr/local/bin/docker-compose
+    mode: '0755'
+    owner: root
+    group: root
+  tags: docker-compose
+
+- name: 🔗 Create Docker Compose symlink
+  file:
+    src: /usr/local/bin/docker-compose
+    dest: /usr/bin/docker-compose
+    state: link
+  tags: docker-compose
+
+- name: ✅ Verify Docker installation
+  command: docker --version
+  register: docker_version
+  changed_when: false
+  tags: docker
+
+- name: ✅ Verify Docker Compose installation
+  command: docker-compose --version
+  register: docker_compose_version
+  changed_when: false
+  tags: docker-compose
+
+- name: 📊 Display Docker information
+  debug:
+    msg:
+      - "Docker version: {{ docker_version.stdout }}"
+      - "Docker Compose version: {{ docker_compose_version.stdout }}"
+  tags: docker
+
+- name: 🔧 Configure Docker log rotation
+  template:
+    src: docker-logrotate.j2
+    dest: /etc/logrotate.d/docker
+  tags: docker
+
+- name: 🛡️ Configure Docker security
+  include_tasks: security.yml
+  when: docker_security_enabled | default(true)
+  tags: docker-security
+
+- name: 📊 Setup Docker monitoring
+  include_tasks: monitoring.yml
+  when: docker_monitoring_enabled | default(true)
+  tags: docker-monitoring
+
+- name: 🧹 Configure Docker cleanup
+  template:
+    src: docker-cleanup.sh.j2
+    dest: /usr/local/bin/docker-cleanup.sh
+    mode: '0755'
+  tags: docker-cleanup
+
+- name: ⏰ Schedule Docker cleanup
+  cron:
+    name: "Docker cleanup"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/docker-cleanup.sh"
+    user: root
+  when: docker_cleanup_enabled | default(true)
+  tags: docker-cleanup

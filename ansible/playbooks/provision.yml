@@ -1,0 +1,411 @@
+# ===================================================================
+# Server Provisioning and Hardening Playbook
+# ===================================================================
+#
+# This playbook handles initial server provisioning and security
+# hardening for blog application infrastructure.
+#
+# ===================================================================
+
+---
+- name: 🛡️ Server Provisioning and Hardening
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Security configuration
+    ssh_port: "{{ custom_ssh_port | default(22) }}"
+    allowed_ssh_users: "{{ ssh_users | default(['deploy', 'admin']) }}"
+    fail2ban_enabled: true
+    ufw_enabled: true
+    
+    # System configuration
+    timezone: "{{ server_timezone | default('UTC') }}"
+    ntp_servers:
+      - "0.pool.ntp.org"
+      - "1.pool.ntp.org"
+      - "2.pool.ntp.org"
+    
+    # Monitoring
+    log_retention_days: 30
+    disk_usage_threshold: 85
+  
+  pre_tasks:
+    - name: 📋 Display provisioning information
+      debug:
+        msg:
+          - "=== Server Provisioning Started ==="
+          - "Environment: {{ app_environment }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Memory: {{ ansible_memtotal_mb }}MB"
+          - "CPU Cores: {{ ansible_processor_vcpus }}"
+          - "======================================"
+  
+  tasks:
+    # ===================================================================
+    # SYSTEM UPDATES AND PACKAGES
+    # ===================================================================
+    - name: 📦 Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: ['system', 'packages']
+    
+    - name: 🔄 Upgrade all packages
+      apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+      register: upgrade_result
+      tags: ['system', 'packages']
+      
+    - name: 📦 Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - htop
+          - tree
+          - jq
+          - unzip
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - fail2ban
+          - ufw
+          - ntp
+          - logrotate
+          - rsyslog
+          - vim
+          - nano
+          - netstat-nat
+          - iotop
+          - iftop
+        state: present
+      tags: ['system', 'packages']
+    
+    # ===================================================================
+    # SYSTEM CONFIGURATION
+    # ===================================================================
+    - name: ⏰ Set timezone
+      timezone:
+        name: "{{ timezone }}"
+      notify: restart rsyslog
+      tags: ['system', 'time']
+      
+    - name: 🕐 Configure NTP
+      template:
+        src: ntp.conf.j2
+        dest: /etc/ntp.conf
+        backup: yes
+      notify: restart ntp
+      tags: ['system', 'time']
+      
+    - name: 📝 Configure system limits
+      pam_limits:
+        domain: '*'
+        limit_type: '{{ item.type }}'
+        limit_item: '{{ item.item }}'
+        value: '{{ item.value }}'
+      loop:
+        - { type: 'soft', item: 'nofile', value: '65536' }
+        - { type: 'hard', item: 'nofile', value: '65536' }
+        - { type: 'soft', item: 'nproc', value: '32768' }
+        - { type: 'hard', item: 'nproc', value: '32768' }
+      tags: ['system', 'limits']
+      
+    - name: 🔧 Configure sysctl parameters
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: 'vm.swappiness', value: '10' }
+        - { name: 'vm.dirty_ratio', value: '15' }
+        - { name: 'vm.dirty_background_ratio', value: '5' }
+        - { name: 'net.core.somaxconn', value: '65535' }
+        - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+        - { name: 'net.core.netdev_max_backlog', value: '5000' }
+        - { name: 'net.ipv4.tcp_fin_timeout', value: '30' }
+      tags: ['system', 'performance']
+    
+    # ===================================================================
+    # USER MANAGEMENT
+    # ===================================================================
+    - name: 👤 Create deployment user
+      user:
+        name: deploy
+        groups: 
+          - sudo
+          - docker
+        shell: /bin/bash
+        create_home: yes
+        password: "{{ deploy_user_password | password_hash('sha512') if deploy_user_password is defined else '!' }}"
+      tags: ['users', 'security']
+      
+    - name: 🔑 Set up SSH key for deployment user
+      authorized_key:
+        user: deploy
+        key: "{{ deploy_ssh_public_key }}"
+        state: present
+      when: deploy_ssh_public_key is defined
+      tags: ['users', 'ssh']
+      
+    - name: 📝 Configure sudo for deployment user
+      copy:
+        content: |
+          deploy ALL=(ALL) NOPASSWD: ALL
+          %docker ALL=(ALL) NOPASSWD: /usr/bin/docker, /usr/local/bin/docker-compose
+        dest: /etc/sudoers.d/deploy
+        mode: '0440'
+        validate: 'visudo -cf %s'
+      tags: ['users', 'sudo']
+    
+    # ===================================================================
+    # SSH SECURITY HARDENING
+    # ===================================================================
+    - name: 🔒 Configure SSH security
+      lineinfile:
+        dest: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: yes
+      loop:
+        - { regexp: '^#?Port ', line: 'Port {{ ssh_port }}' }
+        - { regexp: '^#?PermitRootLogin ', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication ', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication ', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?AuthorizedKeysFile ', line: 'AuthorizedKeysFile .ssh/authorized_keys' }
+        - { regexp: '^#?PermitEmptyPasswords ', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?ChallengeResponseAuthentication ', line: 'ChallengeResponseAuthentication no' }
+        - { regexp: '^#?X11Forwarding ', line: 'X11Forwarding no' }
+        - { regexp: '^#?MaxAuthTries ', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?ClientAliveInterval ', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax ', line: 'ClientAliveCountMax 2' }
+        - { regexp: '^#?AllowUsers ', line: 'AllowUsers {{ allowed_ssh_users | join(" ") }}' }
+      notify: restart ssh
+      tags: ['ssh', 'security']
+      
+    - name: 🔒 Generate SSH host keys if missing
+      command: ssh-keygen -A
+      args:
+        creates: /etc/ssh/ssh_host_rsa_key
+      notify: restart ssh
+      tags: ['ssh', 'security']
+    
+    # ===================================================================
+    # FIREWALL CONFIGURATION
+    # ===================================================================
+    - name: 🔥 Reset UFW to defaults
+      ufw:
+        state: reset
+      when: ufw_enabled
+      tags: ['firewall', 'security']
+      
+    - name: 🔥 Configure UFW defaults
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+      when: ufw_enabled
+      tags: ['firewall', 'security']
+      
+    - name: 🔥 Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: "{{ ssh_port }}"
+        proto: tcp
+      when: ufw_enabled
+      tags: ['firewall', 'security']
+      
+    - name: 🔥 Allow application ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"     # HTTP
+        - "443"    # HTTPS
+        - "8081"   # Backend API
+        - "3001"   # Frontend
+      when: ufw_enabled
+      tags: ['firewall', 'security']
+      
+    - name: 🔥 Enable UFW
+      ufw:
+        state: enabled
+        logging: 'on'
+      when: ufw_enabled
+      tags: ['firewall', 'security']
+    
+    # ===================================================================
+    # FAIL2BAN CONFIGURATION
+    # ===================================================================
+    - name: 🛡️ Configure Fail2Ban for SSH
+      copy:
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 3600
+          findtime = 600
+          
+          [nginx-http-auth]
+          enabled = true
+          filter = nginx-http-auth
+          logpath = /var/log/nginx/error.log
+          maxretry = 5
+          bantime = 3600
+          
+          [nginx-limit-req]
+          enabled = true
+          filter = nginx-limit-req
+          logpath = /var/log/nginx/error.log
+          maxretry = 10
+          bantime = 3600
+        dest: /etc/fail2ban/jail.local
+      notify: restart fail2ban
+      when: fail2ban_enabled
+      tags: ['fail2ban', 'security']
+    
+    # ===================================================================
+    # LOGGING CONFIGURATION
+    # ===================================================================
+    - name: 📝 Configure log rotation
+      copy:
+        content: |
+          /var/log/blog-app/*.log {
+              daily
+              missingok
+              rotate {{ log_retention_days }}
+              compress
+              delaycompress
+              notifempty
+              create 644 deploy deploy
+              postrotate
+                  /usr/bin/systemctl reload nginx > /dev/null 2>&1 || true
+                  /usr/bin/docker-compose -f /opt/blog-app/docker-compose.yml restart > /dev/null 2>&1 || true
+              endscript
+          }
+        dest: /etc/logrotate.d/blog-app
+      tags: ['logging', 'maintenance']
+      
+    - name: 📝 Create log directory
+      file:
+        path: /var/log/blog-app
+        state: directory
+        owner: deploy
+        group: deploy
+        mode: '0755'
+      tags: ['logging', 'directories']
+    
+    # ===================================================================
+    # SYSTEM MONITORING
+    # ===================================================================
+    - name: 📊 Install system monitoring script
+      copy:
+        content: |
+          #!/bin/bash
+          # System monitoring script for blog application
+          
+          LOGFILE="/var/log/blog-app/system-monitor.log"
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+          
+          echo "[$TIMESTAMP] System monitoring check" >> $LOGFILE
+          
+          # Check disk usage
+          DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+          if [ $DISK_USAGE -gt {{ disk_usage_threshold }} ]; then
+              echo "[$TIMESTAMP] WARNING: Disk usage is ${DISK_USAGE}%" >> $LOGFILE
+          fi
+          
+          # Check memory usage
+          MEMORY_USAGE=$(free | grep Mem | awk '{printf("%.0f", $3/$2 * 100.0)}')
+          echo "[$TIMESTAMP] Memory usage: ${MEMORY_USAGE}%" >> $LOGFILE
+          
+          # Check load average
+          LOAD_AVG=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
+          echo "[$TIMESTAMP] Load average: $LOAD_AVG" >> $LOGFILE
+          
+          # Check Docker containers
+          if command -v docker >/dev/null 2>&1; then
+              RUNNING_CONTAINERS=$(docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || echo "Docker not available")
+              echo "[$TIMESTAMP] Docker containers: $RUNNING_CONTAINERS" >> $LOGFILE
+          fi
+        dest: /usr/local/bin/system-monitor.sh
+        mode: '0755'
+      tags: ['monitoring', 'scripts']
+      
+    - name: ⏰ Schedule system monitoring
+      cron:
+        name: "System monitoring"
+        minute: "*/10"
+        job: "/usr/local/bin/system-monitor.sh"
+        user: deploy
+      tags: ['monitoring', 'cron']
+    
+    # ===================================================================
+    # AUTOMATIC UPDATES (for security patches)
+    # ===================================================================
+    - name: 🔄 Configure automatic security updates
+      copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Download-Upgradeable-Packages "1";
+          APT::Periodic::AutocleanInterval "7";
+          APT::Periodic::Unattended-Upgrade "1";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+      when: app_environment != 'production'  # Be more careful in production
+      tags: ['security', 'updates']
+      
+    - name: 🔄 Configure unattended upgrades
+      copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+          };
+          Unattended-Upgrade::Package-Blacklist {
+              "nginx";
+              "docker*";
+              "mongodb*";
+              "redis*";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+      when: app_environment != 'production'
+      tags: ['security', 'updates']
+  
+  handlers:
+    - name: restart ssh
+      service:
+        name: ssh
+        state: restarted
+        
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+        
+    - name: restart ntp
+      service:
+        name: ntp
+        state: restarted
+        
+    - name: restart rsyslog
+      service:
+        name: rsyslog
+        state: restarted

@@ -1,0 +1,61 @@
+# ===================================================================
+# Development Inventory for Blog Application
+# ===================================================================
+
+[all:vars]
+app_environment=development
+ansible_user=vagrant
+ansible_ssh_private_key_file=~/.vagrant.d/insecure_private_key
+ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+# All-in-one development server
+[all_in_one]
+blog-dev ansible_host=192.168.56.10
+
+# For development, we use the same server for everything
+[loadbalancer]
+blog-dev ansible_host=192.168.56.10
+
+[web]
+blog-dev ansible_host=192.168.56.10
+
+[app]
+blog-dev ansible_host=192.168.56.10
+
+[database]
+blog-dev ansible_host=192.168.56.10 mongodb_role=standalone
+
+[cache]
+blog-dev ansible_host=192.168.56.10 redis_role=standalone
+
+[monitoring]
+blog-dev ansible_host=192.168.56.10
+
+# Group definitions
+[frontend:children]
+loadbalancer
+web
+
+[backend:children]
+app
+database
+cache
+
+[infrastructure:children]
+frontend
+backend
+monitoring
+
+[development:children]
+infrastructure
+
+[development:vars]
+app_domain=dev.blog-app.local
+ssl_enabled=false
+backup_enabled=false
+monitoring_enabled=false
+log_level=debug
+debug_mode=true
+docker_cleanup_enabled=false
+fail2ban_enabled=false

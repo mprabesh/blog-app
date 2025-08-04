@@ -1,0 +1,83 @@
+# ===================================================================
+# Staging Environment Variables
+# ===================================================================
+
+---
+# Environment configuration
+app_environment: staging
+app_version: "{{ docker_image_tag | default('staging') }}"
+
+# Application configuration
+app_domain: "staging.blog-app.example.com"
+app_port: 8081
+frontend_port: 3001
+
+# Security configuration
+ssl_enabled: true
+ssl_cert_path: "/etc/ssl/certs/staging-blog-app.crt"
+ssl_key_path: "/etc/ssl/private/staging-blog-app.key"
+
+# Database configuration
+mongo_host: "{{ hostvars[groups['database'][0]]['ansible_default_ipv4']['address'] }}"
+mongo_port: 27017
+mongo_database: "blogapp_staging"
+mongo_replica_set: false  # Single instance for staging
+mongo_auth_enabled: true
+
+# Cache configuration
+redis_host: "{{ hostvars[groups['cache'][0]]['ansible_default_ipv4']['address'] }}"
+redis_port: 6379
+redis_password_enabled: true
+redis_max_memory: "1gb"
+redis_eviction_policy: "allkeys-lru"
+
+# Backup configuration
+backup_enabled: false  # No backups in staging
+backup_schedule: "0 3 * * *"  # Daily at 3 AM (if enabled)
+backup_retention_days: 7
+
+# Monitoring configuration
+monitoring_enabled: true
+prometheus_port: 9090
+grafana_port: 3000
+alertmanager_port: 9093
+
+# Logging configuration
+log_level: "info"
+log_retention_days: 30
+centralized_logging: false
+
+# Performance configuration
+worker_processes: 2
+worker_connections: 512
+client_max_body_size: "10m"
+
+# Resource limits
+memory_limit: "1g"
+cpu_limit: "1"
+disk_usage_threshold: 85
+
+# Security hardening (relaxed for staging)
+fail2ban_enabled: true
+ufw_enabled: true
+ssh_port: 22
+ssh_permit_root_login: false
+
+# Docker configuration
+docker_log_max_size: "5m"
+docker_log_max_file: "2"
+
+# Deployment configuration
+rolling_update_batch: 1  # Deploy one at a time in staging
+health_check_retries: 5
+health_check_delay: 10
+
+# External services (testing/staging versions)
+cdn_enabled: false
+email_service: "mailhog"  # Local testing email service
+analytics_enabled: false
+
+# Development features
+debug_mode: true
+seed_database: true
+test_data_enabled: true

@@ -1,0 +1,95 @@
+# ===================================================================
+# Common Role - Basic Server Setup and Hardening
+# ===================================================================
+
+---
+- name: 📦 Update package cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: packages
+
+- name: 🔄 Upgrade all packages
+  apt:
+    upgrade: dist
+    autoremove: yes
+    autoclean: yes
+  tags: packages
+
+- name: 📦 Install essential packages
+  apt:
+    name: "{{ common_packages }}"
+    state: present
+  tags: packages
+
+- name: 👤 Create system users
+  user:
+    name: "{{ item.name }}"
+    groups: "{{ item.groups | default([]) }}"
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    create_home: "{{ item.create_home | default(true) }}"
+    password: "{{ item.password | default('!') }}"
+    state: present
+  loop: "{{ system_users }}"
+  when: system_users is defined
+  tags: users
+
+- name: 🔑 Set up SSH keys
+  authorized_key:
+    user: "{{ item.user }}"
+    key: "{{ item.key }}"
+    state: present
+  loop: "{{ ssh_keys }}"
+  when: ssh_keys is defined
+  tags: ssh
+
+- name: ⏰ Set timezone
+  timezone:
+    name: "{{ timezone }}"
+  notify: restart rsyslog
+  tags: system
+
+- name: 🔧 Configure system limits
+  pam_limits:
+    domain: "{{ item.domain }}"
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop: "{{ system_limits }}"
+  tags: system
+
+- name: 🔧 Configure sysctl parameters
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop: "{{ sysctl_params }}"
+  tags: system
+
+- name: 🔒 Configure SSH security
+  template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    backup: yes
+    validate: '/usr/sbin/sshd -T -f %s'
+  notify: restart ssh
+  tags: ssh
+
+- name: 🔥 Configure UFW firewall
+  include_tasks: firewall.yml
+  when: ufw_enabled | default(true)
+  tags: firewall
+
+- name: 🛡️ Configure Fail2Ban
+  include_tasks: fail2ban.yml
+  when: fail2ban_enabled | default(true)
+  tags: fail2ban
+
+- name: 📝 Configure logging
+  include_tasks: logging.yml
+  tags: logging
+
+- name: 📊 Setup monitoring
+  include_tasks: monitoring.yml
+  tags: monitoring

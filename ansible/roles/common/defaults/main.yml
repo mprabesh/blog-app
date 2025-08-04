@@ -1,0 +1,96 @@
+# ===================================================================
+# Common Role Default Variables
+# ===================================================================
+
+---
+# Package management
+common_packages:
+  - curl
+  - wget
+  - git
+  - htop
+  - tree
+  - jq
+  - unzip
+  - software-properties-common
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - fail2ban
+  - ufw
+  - ntp
+  - logrotate
+  - rsyslog
+  - vim
+  - nano
+  - net-tools
+  - iotop
+  - iftop
+
+# System configuration
+timezone: "UTC"
+hostname: "{{ inventory_hostname }}"
+
+# System limits
+system_limits:
+  - { domain: '*', type: 'soft', item: 'nofile', value: '65536' }
+  - { domain: '*', type: 'hard', item: 'nofile', value: '65536' }
+  - { domain: '*', type: 'soft', item: 'nproc', value: '32768' }
+  - { domain: '*', type: 'hard', item: 'nproc', value: '32768' }
+
+# Sysctl parameters
+sysctl_params:
+  - { name: 'vm.swappiness', value: '10' }
+  - { name: 'vm.dirty_ratio', value: '15' }
+  - { name: 'vm.dirty_background_ratio', value: '5' }
+  - { name: 'net.core.somaxconn', value: '65535' }
+  - { name: 'net.ipv4.tcp_max_syn_backlog', value: '65535' }
+  - { name: 'net.core.netdev_max_backlog', value: '5000' }
+  - { name: 'net.ipv4.tcp_fin_timeout', value: '30' }
+
+# SSH configuration
+ssh_port: 22
+ssh_permit_root_login: false
+ssh_password_authentication: false
+ssh_max_auth_tries: 3
+ssh_client_alive_interval: 300
+ssh_client_alive_count_max: 2
+
+# Firewall configuration
+ufw_enabled: true
+ufw_default_incoming: deny
+ufw_default_outgoing: allow
+
+# Basic firewall rules
+ufw_rules:
+  - { rule: allow, port: "{{ ssh_port }}", proto: tcp }
+  - { rule: allow, port: 80, proto: tcp }
+  - { rule: allow, port: 443, proto: tcp }
+
+# Fail2Ban configuration
+fail2ban_enabled: true
+fail2ban_bantime: 3600
+fail2ban_findtime: 600
+fail2ban_maxretry: 3
+
+# Logging configuration
+log_retention_days: 30
+rsyslog_remote_logging: false
+
+# NTP configuration
+ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "2.pool.ntp.org"
+  - "3.pool.ntp.org"
+
+# Monitoring configuration
+monitoring_enabled: true
+disk_usage_threshold: 85
+memory_usage_threshold: 80
+load_average_threshold: 2.0
+
+# Automatic updates (disabled in production by default)
+automatic_updates_enabled: "{{ app_environment != 'production' }}"
+security_updates_only: true

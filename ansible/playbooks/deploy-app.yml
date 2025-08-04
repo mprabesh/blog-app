@@ -1,0 +1,362 @@
+# ===================================================================
+# Application Deployment Playbook
+# ===================================================================
+#
+# This playbook handles the deployment of the blog application
+# including Docker containers, environment configuration, and
+# health checks.
+#
+# ===================================================================
+
+---
+- name: 🚀 Blog Application Deployment
+  hosts: app
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    app_directory: "/opt/blog-app"
+    app_user: "deploy"
+    app_version: "{{ docker_image_tag | default('latest') }}"
+    backend_image: "{{ backend_docker_image | default('ghcr.io/mprabesh/blog-app-blog-backend') }}"
+    frontend_image: "{{ frontend_docker_image | default('ghcr.io/mprabesh/blog-app-blog-frontend') }}"
+    
+    # Health check configuration
+    health_check_retries: 10
+    health_check_delay: 15
+    
+  pre_tasks:
+    - name: 📋 Display deployment information
+      debug:
+        msg:
+          - "=== Application Deployment ==="
+          - "Environment: {{ app_environment }}"
+          - "Version: {{ app_version }}"
+          - "Backend Image: {{ backend_image }}:{{ app_version }}"
+          - "Frontend Image: {{ frontend_image }}:{{ app_version }}"
+          - "Application Directory: {{ app_directory }}"
+          - "================================="
+  
+  tasks:
+    # ===================================================================
+    # PRE-DEPLOYMENT BACKUP
+    # ===================================================================
+    - name: 💾 Create pre-deployment backup
+      block:
+        - name: 📦 Stop existing containers for backup
+          docker_compose:
+            project_src: "{{ app_directory }}"
+            state: absent
+          ignore_errors: yes
+          when: app_environment == 'production'
+          
+        - name: 💾 Backup application data
+          archive:
+            path: "{{ app_directory }}"
+            dest: "/tmp/blog-app-backup-{{ ansible_date_time.epoch }}.tar.gz"
+            exclude_path:
+              - "{{ app_directory }}/node_modules"
+              - "{{ app_directory }}/.git"
+          when: app_environment == 'production'
+          
+      rescue:
+        - name: ⚠️ Backup failed but continuing
+          debug:
+            msg: "Backup failed but deployment will continue"
+      tags: ['deploy', 'backup']
+    
+    # ===================================================================
+    # APPLICATION DIRECTORY SETUP
+    # ===================================================================
+    - name: 📁 Create application directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+      tags: ['deploy', 'setup']
+      
+    - name: 📁 Create required subdirectories
+      file:
+        path: "{{ app_directory }}/{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+      loop:
+        - logs
+        - backups
+        - uploads
+        - configs
+      tags: ['deploy', 'setup']
+    
+    # ===================================================================
+    # ENVIRONMENT CONFIGURATION
+    # ===================================================================
+    - name: 🔧 Create environment configuration
+      template:
+        src: app.env.j2
+        dest: "{{ app_directory }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0600'
+        backup: yes
+      notify: restart application
+      tags: ['deploy', 'config']
+      
+    - name: 🐳 Create Docker Compose configuration
+      template:
+        src: docker-compose.yml.j2
+        dest: "{{ app_directory }}/docker-compose.yml"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+        backup: yes
+      notify: restart application
+      tags: ['deploy', 'config']
+      
+    - name: 📝 Create nginx configuration for application
+      template:
+        src: nginx-app.conf.j2
+        dest: "{{ app_directory }}/configs/nginx.conf"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      tags: ['deploy', 'config']
+    
+    # ===================================================================
+    # CONTAINER REGISTRY AUTHENTICATION
+    # ===================================================================
+    - name: 🔐 Login to container registry
+      docker_login:
+        registry: "{{ docker_registry | default('ghcr.io') }}"
+        username: "{{ docker_registry_username }}"
+        password: "{{ docker_registry_password }}"
+      become_user: "{{ app_user }}"
+      when: 
+        - docker_registry_username is defined
+        - docker_registry_password is defined
+      tags: ['deploy', 'registry']
+    
+    # ===================================================================
+    # PULL DOCKER IMAGES
+    # ===================================================================
+    - name: 📦 Pull Docker images
+      docker_image:
+        name: "{{ item }}"
+        tag: "{{ app_version }}"
+        source: pull
+        force_source: yes
+      loop:
+        - "{{ backend_image }}"
+        - "{{ frontend_image }}"
+      become_user: "{{ app_user }}"
+      register: image_pull_result
+      retries: 3
+      delay: 10
+      tags: ['deploy', 'images']
+      
+    - name: 📦 Verify images pulled successfully
+      debug:
+        msg: "Successfully pulled {{ item.item }}:{{ app_version }}"
+      loop: "{{ image_pull_result.results }}"
+      when: item is succeeded
+      tags: ['deploy', 'images']
+    
+    # ===================================================================
+    # DATABASE MIGRATION
+    # ===================================================================
+    - name: 🗄️ Run database migrations
+      block:
+        - name: 🔍 Check if migration is needed
+          uri:
+            url: "http://{{ mongo_host | default('localhost') }}:27017"
+            method: GET
+            status_code: [200, 404]
+          register: db_check
+          ignore_errors: yes
+          
+        - name: 🗄️ Execute database migration
+          docker_container:
+            name: blog-migration-temp
+            image: "{{ backend_image }}:{{ app_version }}"
+            command: ["node", "migrations/migrate.js"]
+            env:
+              MONGO_URL: "{{ mongo_url }}"
+              NODE_ENV: "{{ app_environment }}"
+            networks:
+              - name: blog-app-network
+            cleanup: yes
+            detach: false
+          become_user: "{{ app_user }}"
+          when: run_migration | default(true)
+          register: migration_result
+          
+        - name: ✅ Migration result
+          debug:
+            msg: "Database migration completed successfully"
+          when: migration_result is succeeded
+          
+      rescue:
+        - name: ❌ Migration failed
+          debug:
+            msg: "Database migration failed: {{ migration_result.msg | default('Unknown error') }}"
+          failed_when: app_environment == 'production'
+          
+      tags: ['deploy', 'migration']
+    
+    # ===================================================================
+    # DEPLOY APPLICATION
+    # ===================================================================
+    - name: 🚀 Deploy application containers
+      docker_compose:
+        project_src: "{{ app_directory }}"
+        state: present
+        pull: yes
+        recreate: smart
+        timeout: 120
+      become_user: "{{ app_user }}"
+      register: deployment_result
+      tags: ['deploy', 'containers']
+      
+    - name: ⏳ Wait for containers to be ready
+      wait_for:
+        port: "{{ item }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        delay: 10
+        timeout: 120
+        state: started
+      loop:
+        - "{{ backend_port | default(8081) }}"
+        - "{{ frontend_port | default(3001) }}"
+      tags: ['deploy', 'containers']
+    
+    # ===================================================================
+    # HEALTH CHECKS
+    # ===================================================================
+    - name: 🏥 Application health checks
+      block:
+        - name: 🔍 Backend health check
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}:{{ backend_port | default(8081) }}/api/ping"
+            method: GET
+            status_code: 200
+            timeout: 30
+          retries: "{{ health_check_retries }}"
+          delay: "{{ health_check_delay }}"
+          register: backend_health
+          
+        - name: 🔍 Frontend health check
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}:{{ frontend_port | default(3001) }}"
+            method: GET
+            status_code: 200
+            timeout: 30
+          retries: "{{ health_check_retries }}"
+          delay: "{{ health_check_delay }}"
+          register: frontend_health
+          
+        - name: ✅ Health check results
+          debug:
+            msg:
+              - "Backend health: {{ 'HEALTHY' if backend_health is succeeded else 'UNHEALTHY' }}"
+              - "Frontend health: {{ 'HEALTHY' if frontend_health is succeeded else 'UNHEALTHY' }}"
+              
+      rescue:
+        - name: ❌ Health check failed
+          debug:
+            msg: "Application health check failed"
+          failed_when: app_environment == 'production'
+          
+      tags: ['deploy', 'health']
+    
+    # ===================================================================
+    # POST-DEPLOYMENT TASKS
+    # ===================================================================
+    - name: 🔧 Post-deployment tasks
+      block:
+        - name: 🌱 Seed database (non-production only)
+          docker_container:
+            name: blog-seed-temp
+            image: "{{ backend_image }}:{{ app_version }}"
+            command: ["node", "seedAll.js"]
+            env:
+              MONGO_URL: "{{ mongo_url }}"
+              NODE_ENV: "{{ app_environment }}"
+            networks:
+              - name: blog-app-network
+            cleanup: yes
+            detach: false
+          become_user: "{{ app_user }}"
+          when: 
+            - seed_database | default(false)
+            - app_environment != 'production'
+            
+        - name: 🔄 Warm application cache
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}:{{ backend_port | default(8081) }}/api/blogs"
+            method: GET
+            status_code: 200
+          ignore_errors: yes
+          
+        - name: 📊 Collect deployment metrics
+          set_fact:
+            deployment_metrics:
+              timestamp: "{{ ansible_date_time.iso8601 }}"
+              version: "{{ app_version }}"
+              environment: "{{ app_environment }}"
+              backend_healthy: "{{ backend_health is succeeded }}"
+              frontend_healthy: "{{ frontend_health is succeeded }}"
+              containers_running: "{{ deployment_result.services | length }}"
+              
+      tags: ['deploy', 'post-deploy']
+    
+    # ===================================================================
+    # DEPLOYMENT VERIFICATION
+    # ===================================================================
+    - name: ✅ Deployment verification
+      debug:
+        msg:
+          - "🎉 Deployment completed successfully!"
+          - "Environment: {{ app_environment }}"
+          - "Version: {{ app_version }}"
+          - "Backend URL: http://{{ ansible_default_ipv4.address }}:{{ backend_port | default(8081) }}"
+          - "Frontend URL: http://{{ ansible_default_ipv4.address }}:{{ frontend_port | default(3001) }}"
+          - "Health Status: {{ 'HEALTHY' if (backend_health is succeeded and frontend_health is succeeded) else 'DEGRADED' }}"
+      tags: ['deploy', 'verify']
+      
+    - name: 📝 Create deployment record
+      copy:
+        content: |
+          Deployment Record
+          =================
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          Environment: {{ app_environment }}
+          Version: {{ app_version }}
+          Host: {{ ansible_hostname }}
+          User: {{ ansible_user_id }}
+          
+          Images Deployed:
+          - Backend: {{ backend_image }}:{{ app_version }}
+          - Frontend: {{ frontend_image }}:{{ app_version }}
+          
+          Health Status:
+          - Backend: {{ 'HEALTHY' if backend_health is succeeded else 'UNHEALTHY' }}
+          - Frontend: {{ 'HEALTHY' if frontend_health is succeeded else 'UNHEALTHY' }}
+          
+          Container Status:
+          {{ deployment_result.services | to_nice_yaml if deployment_result.services is defined else 'No container info available' }}
+        dest: "{{ app_directory }}/logs/deployment-{{ ansible_date_time.epoch }}.log"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+      tags: ['deploy', 'logging']
+  
+  handlers:
+    - name: restart application
+      docker_compose:
+        project_src: "{{ app_directory }}"
+        state: present
+        recreate: always
+      become_user: "{{ app_user }}"

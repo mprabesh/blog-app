@@ -1,0 +1,69 @@
+# ===================================================================
+# Production Inventory for Blog Application
+# ===================================================================
+
+[all:vars]
+app_environment=production
+ansible_user=deploy
+ansible_ssh_private_key_file=~/.ssh/blog-app-production
+ansible_python_interpreter=/usr/bin/python3
+
+# Load balancer / reverse proxy
+[loadbalancer]
+blog-lb-01 ansible_host=10.0.1.10
+blog-lb-02 ansible_host=10.0.1.11
+
+# Web servers (frontend)
+[web]
+blog-web-01 ansible_host=10.0.2.10
+blog-web-02 ansible_host=10.0.2.11
+blog-web-03 ansible_host=10.0.2.12
+
+# Application servers (backend)
+[app]
+blog-app-01 ansible_host=10.0.3.10
+blog-app-02 ansible_host=10.0.3.11
+blog-app-03 ansible_host=10.0.3.12
+
+# Database servers
+[database]
+blog-db-01 ansible_host=10.0.4.10 mongodb_role=primary
+blog-db-02 ansible_host=10.0.4.11 mongodb_role=secondary
+blog-db-03 ansible_host=10.0.4.12 mongodb_role=arbiter
+
+# Cache servers
+[cache]
+blog-cache-01 ansible_host=10.0.5.10 redis_role=master
+blog-cache-02 ansible_host=10.0.5.11 redis_role=slave
+blog-cache-03 ansible_host=10.0.5.12 redis_role=sentinel
+
+# Monitoring servers
+[monitoring]
+blog-monitor-01 ansible_host=10.0.6.10
+
+# Group definitions for easy management
+[frontend:children]
+loadbalancer
+web
+
+[backend:children]
+app
+database
+cache
+
+[infrastructure:children]
+frontend
+backend
+monitoring
+
+# Environment-specific variables
+[production:children]
+infrastructure
+
+[production:vars]
+app_domain=blog-app.example.com
+ssl_enabled=true
+backup_enabled=true
+monitoring_enabled=true
+log_level=warn
+debug_mode=false

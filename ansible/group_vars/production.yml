@@ -1,0 +1,81 @@
+# ===================================================================
+# Production Environment Variables
+# ===================================================================
+
+---
+# Environment configuration
+app_environment: production
+app_version: "{{ docker_image_tag | default('latest') }}"
+
+# Application configuration
+app_domain: "blog-app.example.com"
+app_port: 8081
+frontend_port: 3001
+
+# Security configuration
+ssl_enabled: true
+ssl_cert_path: "/etc/ssl/certs/blog-app.crt"
+ssl_key_path: "/etc/ssl/private/blog-app.key"
+
+# Database configuration
+mongo_host: "{{ hostvars[groups['database'][0]]['ansible_default_ipv4']['address'] }}"
+mongo_port: 27017
+mongo_database: "blogapp_production"
+mongo_replica_set: "blogapp-rs"
+mongo_auth_enabled: true
+
+# Cache configuration
+redis_host: "{{ hostvars[groups['cache'][0]]['ansible_default_ipv4']['address'] }}"
+redis_port: 6379
+redis_password_enabled: true
+redis_max_memory: "2gb"
+redis_eviction_policy: "allkeys-lru"
+
+# Backup configuration
+backup_enabled: true
+backup_schedule: "0 2 * * *"  # Daily at 2 AM
+backup_retention_days: 30
+backup_s3_bucket: "blog-app-backups-prod"
+
+# Monitoring configuration
+monitoring_enabled: true
+prometheus_port: 9090
+grafana_port: 3000
+alertmanager_port: 9093
+
+# Logging configuration
+log_level: "warn"
+log_retention_days: 90
+centralized_logging: true
+elasticsearch_host: "logs.example.com"
+
+# Performance configuration
+worker_processes: "auto"
+worker_connections: 1024
+client_max_body_size: "50m"
+
+# Resource limits
+memory_limit: "2g"
+cpu_limit: "2"
+disk_usage_threshold: 80
+
+# Security hardening
+fail2ban_enabled: true
+ufw_enabled: true
+ssh_port: 2222
+ssh_permit_root_login: false
+
+# Docker configuration
+docker_log_max_size: "10m"
+docker_log_max_file: "3"
+
+# Deployment configuration
+rolling_update_batch: "25%"
+health_check_retries: 10
+health_check_delay: 15
+
+# External services
+cdn_enabled: true
+cdn_url: "https://cdn.blog-app.example.com"
+email_service: "sendgrid"
+analytics_enabled: true

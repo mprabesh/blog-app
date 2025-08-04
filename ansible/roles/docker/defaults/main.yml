@@ -1,0 +1,82 @@
+# ===================================================================
+# Docker Role Default Variables
+# ===================================================================
+
+---
+# Docker repository configuration
+docker_gpg_key_url: "https://download.docker.com/linux/ubuntu/gpg"
+docker_repository: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+
+# Docker packages to install
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Docker Compose installation
+docker_compose_version: "2.21.0"
+docker_compose_url: "https://github.com/docker/compose/releases/download/v{{ docker_compose_version }}/docker-compose-linux-x86_64"
+
+# Users to add to docker group
+docker_users:
+  - deploy
+  - "{{ ansible_user }}"
+
+# Docker daemon configuration
+docker_daemon_config:
+  log-driver: "json-file"
+  log-opts:
+    max-size: "10m"
+    max-file: "3"
+  storage-driver: "overlay2"
+  userland-proxy: false
+  experimental: false
+  live-restore: true
+  default-ulimits:
+    nofile:
+      name: "nofile"
+      hard: 65536
+      soft: 65536
+
+# Docker security configuration
+docker_security_enabled: true
+docker_content_trust: false
+docker_seccomp_profile: "/etc/docker/seccomp.json"
+
+# Docker monitoring
+docker_monitoring_enabled: true
+docker_metrics_address: "127.0.0.1:9323"
+
+# Docker cleanup configuration
+docker_cleanup_enabled: true
+docker_cleanup_max_age: "7d"
+docker_cleanup_max_size: "10GB"
+
+# Resource limits
+docker_default_ulimits:
+  - name: "nofile"
+    soft: 65536
+    hard: 65536
+  - name: "nproc"
+    soft: 32768
+    hard: 32768
+
+# Network configuration
+docker_bridge_ip: "172.17.0.1/16"
+docker_enable_ip_forwarding: true
+
+# Registry configuration
+docker_registries: []
+# Example:
+# docker_registries:
+#   - registry: "ghcr.io"
+#     username: "{{ github_username }}"
+#     password: "{{ github_token }}"
+
+# Docker Swarm configuration (if needed)
+docker_swarm_enabled: false
+docker_swarm_manager_ip: ""
+docker_swarm_worker_token: ""
+docker_swarm_manager_token: ""
