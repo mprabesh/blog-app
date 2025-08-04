@@ -1,0 +1,357 @@
+# ===================================================================
+# Production Docker Compose Configuration
+# ===================================================================
+#
+# This configuration is optimized for production with:
+# - High availability and resilience
+# - Security hardening and secrets management
+# - Performance optimization
+# - Monitoring and logging
+# - Blue-green deployment support
+#
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d
+#
+# ===================================================================
+
+version: '3.8'
+
+services:
+  # ===================================================================
+  # Backend API Service (Production)
+  # ===================================================================
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/mprabesh/blog-app-blog-backend}:${APP_VERSION:-latest}
+    environment:
+      - NODE_ENV=production
+      - PROD_PORT=8081
+      - MONGO_URL_FILE=/run/secrets/mongo_url
+      - SECRET_KEY_FILE=/run/secrets/jwt_secret
+      - REDIS_URL_FILE=/run/secrets/redis_url
+      - LOG_LEVEL=warn
+    ports:
+      - "8081:8081"
+    volumes:
+      - app_logs:/var/log/app:rw
+      - app_uploads:/usr/src/app/uploads:rw
+    depends_on:
+      - cache
+    networks:
+      - app-network
+      - monitoring-network
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 30s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/api/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    secrets:
+      - mongo_url
+      - jwt_secret
+      - redis_url
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=backend,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend-prod.rule=Host(`api.blog-app.example.com`)"
+      - "traefik.http.routers.backend-prod.tls=true"
+      - "traefik.http.routers.backend-prod.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend-prod.loadbalancer.server.port=8081"
+      - "traefik.http.services.backend-prod.loadbalancer.healthcheck.path=/api/ping"
+
+  # ===================================================================
+  # Frontend Service (Production)
+  # ===================================================================
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/mprabesh/blog-app-blog-frontend}:${APP_VERSION:-latest}
+    environment:
+      - VITE_API_URL=https://api.blog-app.example.com/api
+      - NODE_ENV=production
+    ports:
+      - "3001:80"
+    volumes:
+      - app_logs:/var/log/nginx:rw
+    depends_on:
+      - backend
+    networks:
+      - app-network
+      - monitoring-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 30s
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=frontend,environment=production"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend-prod.rule=Host(`blog-app.example.com`)"
+      - "traefik.http.routers.frontend-prod.tls=true"
+      - "traefik.http.routers.frontend-prod.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend-prod.loadbalancer.server.port=80"
+      - "traefik.http.services.frontend-prod.loadbalancer.healthcheck.path=/"
+
+  # ===================================================================
+  # Redis Cache (Production - External service reference)
+  # ===================================================================
+  cache:
+    image: redis:7.2-alpine
+    command: redis-server --requirepass-file /run/secrets/redis_password --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data:rw
+      - app_logs:/var/log/redis:rw
+    networks:
+      - app-network
+      - monitoring-network
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    secrets:
+      - redis_password
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=cache,environment=production"
+
+  # ===================================================================
+  # Reverse Proxy (Traefik)
+  # ===================================================================
+  traefik:
+    image: traefik:v3.0
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@blog-app.example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - "--metrics.prometheus=true"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt:rw
+      - app_logs:/var/log/traefik:rw
+    networks:
+      - app-network
+      - monitoring-network
+    restart: unless-stopped
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.blog-app.example.com`)"
+      - "traefik.http.routers.traefik-dashboard.tls=true"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
+
+  # ===================================================================
+  # Monitoring Services
+  # ===================================================================
+  
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=90d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_config:/etc/prometheus:ro
+      - prometheus_data:/prometheus:rw
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD_FILE=/run/secrets/grafana_admin_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_DOMAIN=monitoring.blog-app.example.com
+      - GF_SMTP_ENABLED=true
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana:rw
+      - grafana_config:/etc/grafana:ro
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    secrets:
+      - grafana_admin_password
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+# ===================================================================
+# Networks
+# ===================================================================
+networks:
+  app-network:
+    driver: overlay
+    attachable: true
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  monitoring-network:
+    driver: overlay
+    attachable: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+# ===================================================================
+# Volumes
+# ===================================================================
+volumes:
+  redis_data:
+    driver: local
+  app_logs:
+    driver: local
+  app_uploads:
+    driver: local
+  traefik_certs:
+    driver: local
+  prometheus_data:
+    driver: local
+  prometheus_config:
+    driver: local
+  grafana_data:
+    driver: local
+  grafana_config:
+    driver: local
+
+# ===================================================================
+# Secrets
+# ===================================================================
+secrets:
+  mongo_url:
+    external: true
+  jwt_secret:
+    external: true
+  redis_url:
+    external: true
+  redis_password:
+    external: true
+  grafana_admin_password:
+    external: true

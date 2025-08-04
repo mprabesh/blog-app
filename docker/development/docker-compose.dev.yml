@@ -1,0 +1,218 @@
+# ===================================================================
+# Development Docker Compose Configuration
+# ===================================================================
+#
+# This configuration is optimized for development with:
+# - Hot reloading and development features
+# - Debug logging and monitoring
+# - Local database and cache instances
+# - Development tools and utilities
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up -d
+#
+# ===================================================================
+
+version: '3.8'
+
+services:
+  # ===================================================================
+  # Backend API Service (Development)
+  # ===================================================================
+  backend:
+    build:
+      context: ./blog-list
+      dockerfile: Dockerfile
+      target: development  # Use development stage if available
+    environment:
+      - NODE_ENV=development
+      - PROD_PORT=8081
+      - DEV_PORT=8081
+      - MONGO_URL=${MONGO_URL:-mongodb://database:27017/bloglist_dev}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - LOG_LEVEL=debug
+      - REDIS_URL=redis://cache:6379
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./blog-list:/usr/src/app
+      - /usr/src/app/node_modules  # Anonymous volume for node_modules
+      - ./logs/backend:/var/log/app
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/api/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    command: npm run start:dev  # Use development start script
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend-dev.rule=Host(`api.dev.blog-app.local`)"
+      - "traefik.http.services.backend-dev.loadbalancer.server.port=8081"
+
+  # ===================================================================
+  # Frontend Service (Development)
+  # ===================================================================
+  frontend:
+    build:
+      context: ./bloglist-frontend
+      dockerfile: Dockerfile
+      target: development  # Use development stage if available
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8081/api}
+      - VITE_DEBUG=true
+    ports:
+      - "3001:80"
+      - "5173:5173"  # Vite dev server port
+    volumes:
+      - ./bloglist-frontend:/app
+      - /app/node_modules  # Anonymous volume for node_modules
+      - ./logs/frontend:/var/log/nginx
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend-dev.rule=Host(`dev.blog-app.local`)"
+      - "traefik.http.services.frontend-dev.loadbalancer.server.port=80"
+
+  # ===================================================================
+  # MongoDB Database (Development)
+  # ===================================================================
+  database:
+    image: mongo:7.0
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-devpassword}
+      - MONGO_INITDB_DATABASE=bloglist_dev
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - ./logs/mongodb:/var/log/mongodb
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand('ping').ok", "--quiet"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    command: mongod --logpath /var/log/mongodb/mongod.log --logappend
+
+  # ===================================================================
+  # Redis Cache (Development)
+  # ===================================================================
+  cache:
+    image: redis:7.2-alpine
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devredispass}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./logs/redis:/var/log/redis
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-devredispass}
+
+  # ===================================================================
+  # Development Tools and Utilities
+  # ===================================================================
+  
+  # Mailhog for email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - app-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mailhog-dev.rule=Host(`mail.dev.blog-app.local`)"
+      - "traefik.http.services.mailhog-dev.loadbalancer.server.port=8025"
+
+  # Redis Commander for cache management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:cache:6379:0:${REDIS_PASSWORD:-devredispass}
+    ports:
+      - "8082:8081"
+    depends_on:
+      - cache
+    networks:
+      - app-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.redis-commander-dev.rule=Host(`redis.dev.blog-app.local`)"
+      - "traefik.http.services.redis-commander-dev.loadbalancer.server.port=8081"
+
+  # Mongo Express for database management
+  mongo-express:
+    image: mongo-express:latest
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_ROOT_USERNAME:-admin}
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_ROOT_PASSWORD:-devpassword}
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-devpassword}@database:27017/?authSource=admin
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    ports:
+      - "8083:8081"
+    depends_on:
+      - database
+    networks:
+      - app-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mongo-express-dev.rule=Host(`mongo.dev.blog-app.local`)"
+      - "traefik.http.services.mongo-express-dev.loadbalancer.server.port=8081"
+
+# ===================================================================
+# Networks
+# ===================================================================
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ===================================================================
+# Volumes
+# ===================================================================
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
