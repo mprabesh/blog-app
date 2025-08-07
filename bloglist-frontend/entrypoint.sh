@@ -37,10 +37,39 @@ find /usr/share/nginx/html -name "*.html" -type f -exec sh -c 'echo "Processing:
 
 # Verify replacement worked
 echo "Verifying placeholder replacement..."
-if find /usr/share/nginx/html -name "*.js" -type f -exec grep -l "__VITE_API_URL__" {} \; | head -1; then
-    echo "WARNING: Some placeholders were not replaced!"
+placeholder_files=$(find /usr/share/nginx/html -name "*.js" -type f -exec grep -l "__VITE_API_URL__" {} \; 2>/dev/null | head -1)
+if [ -n "$placeholder_files" ]; then
+    echo "WARNING: Some placeholders were not replaced in: $placeholder_files"
+    echo "Showing unreplaced content:"
+    grep -n "__VITE_API_URL__" "$placeholder_files" | head -3
 else
     echo "All placeholders successfully replaced with: $VITE_API_URL"
+fi
+
+# Debug: Show what files we're actually working with
+echo "Debug: JavaScript files found:"
+find /usr/share/nginx/html -name "*.js" -type f | head -3
+
+# Debug: Show a sample of the actual content
+echo "Debug: Sample content from main JS file:"
+main_js=$(find /usr/share/nginx/html -name "*.js" -type f | head -1)
+if [ -n "$main_js" ]; then
+    echo "File: $main_js"
+    head -c 500 "$main_js" | tr '\n' ' ' | sed 's/.\{80\}/&\n/g' | head -5
+fi
+
+# Show what's actually in the JavaScript files for debugging
+echo "Checking actual API URL in built files..."
+api_url_lines=$(grep -r "API_BASE_URL.*=" /usr/share/nginx/html/*.js 2>/dev/null | head -3)
+if [ -n "$api_url_lines" ]; then
+    echo "Found API_BASE_URL assignments:"
+    echo "$api_url_lines"
+else
+    echo "No API_BASE_URL assignments found - checking for any API URL patterns..."
+    echo "Searching for all URLs in JS files:"
+    grep -r "http.*api\|localhost.*api\|blog-backend" /usr/share/nginx/html/*.js 2>/dev/null | head -5 || echo "No API URL patterns found"
+    echo "Searching for any string containing 'api':"
+    grep -ri "api" /usr/share/nginx/html/*.js 2>/dev/null | head -3 || echo "No 'api' strings found"
 fi
 
 # Replace backend URL in nginx configuration

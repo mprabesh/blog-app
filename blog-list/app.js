@@ -46,30 +46,56 @@ const {
  */
 app.use(express.json());
 
-// Configure CORS for multi-VM deployment
+// Configure CORS for multi-environment deployment
 app.use(cors({
-  origin: [
-    // Development servers
-    'http://localhost:3001',           // Docker frontend
-    'http://localhost:5173',           // Vite dev server default
-    'http://localhost:4173',           // Vite preview server
-    'http://localhost:3000',           // Alternative dev port
-    'http://localhost',                // Local frontend on port 80
-    'http://127.0.0.1:5173',          // Vite dev server (127.0.0.1)
-    'http://127.0.0.1:3001',          // Alternative localhost
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
     
-    // Production/VM deployments
-    'http://192.168.148.137',          // Frontend VM on port 80
-    'http://192.168.148.139',          // Another frontend VM on port 80
-    /^http:\/\/192\.168\.148\.\d+$/, // Allow any IP in the 192.168.148.x range on port 80
-    /^http:\/\/192\.168\.148\.\d+:3001$/, // Allow any IP in the 192.168.148.x range on port 3001
-    /^http:\/\/192\.168\.248\.\d+$/,  // Allow any IP in the 192.168.248.x range on port 80
-    /^http:\/\/192\.168\.248\.\d+:8081$/, // Allow backend health checks
+    // Development environments
+    const devPatterns = [
+      /^http:\/\/localhost:\d+$/,           // Any localhost port
+      /^http:\/\/127\.0\.0\.1:\d+$/,       // Any 127.0.0.1 port
+      /^http:\/\/0\.0\.0\.0:\d+$/,         // Any 0.0.0.0 port
+    ];
     
-    // Development catch-all (be more permissive in development)
-    /^http:\/\/localhost:\d+$/,       // Any localhost port
-    /^http:\/\/127\.0\.0\.1:\d+$/     // Any 127.0.0.1 port
-  ],
+    // Production/VM environments - broader patterns for flexibility
+    const prodPatterns = [
+      /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+$/, // Any IPv4 with port
+      /^http:\/\/\d+\.\d+\.\d+\.\d+$/,     // Any IPv4 without port (port 80)
+      /^https:\/\/\d+\.\d+\.\d+\.\d+:\d+$/, // HTTPS with port
+      /^https:\/\/\d+\.\d+\.\d+\.\d+$/,    // HTTPS without port
+    ];
+    
+    // Docker network environments
+    const dockerPatterns = [
+      /^http:\/\/[a-zA-Z0-9\-_]+:\d+$/,    // Container names with port
+      /^http:\/\/[a-zA-Z0-9\-_]+$/,        // Container names without port
+      /^http:\/\/172\.\d+\.\d+\.\d+:\d+$/, // Docker bridge networks
+      /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,  // Docker custom networks
+      /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Common private networks
+    ];
+    
+    // Domain-based patterns for production
+    const domainPatterns = [
+      /^https?:\/\/[\w\-]+(\.[\w\-]+)*:\d+$/, // Any domain with port
+      /^https?:\/\/[\w\-]+(\.[\w\-]+)*$/,     // Any domain without port
+    ];
+    
+    // Combine all patterns
+    const allPatterns = [...devPatterns, ...prodPatterns, ...dockerPatterns, ...domainPatterns];
+    
+    // Check if origin matches any pattern
+    const isAllowed = allPatterns.some(pattern => pattern.test(origin));
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      // Log the rejected origin for debugging
+      console.log(`CORS: Rejected origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']

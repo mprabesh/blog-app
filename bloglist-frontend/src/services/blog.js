@@ -37,11 +37,25 @@ import axios from "axios";
 
 // Check if we're in development mode or if the placeholder hasn't been replaced
 const isDevelopment = import.meta.env.DEV;
-const placeholderUrl = "__VITE_API_URL__";
 
-const API_BASE_URL = isDevelopment 
-  ? (import.meta.env.VITE_API_URL || "http://localhost:3003/api")
-  : (placeholderUrl.startsWith("__") ? "http://localhost:8081/api" : placeholderUrl);
+let API_BASE_URL;
+
+if (isDevelopment) {
+  // Development mode - use Vite environment variables
+  API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
+} else {
+  // Production mode - check if we should use proxy or direct calls
+  const placeholder = "__VITE_API_URL__";
+  
+  // If placeholder is replaced, use the provided URL
+  // If not replaced, use relative URLs (proxy mode)
+  if (placeholder !== "__VITE_API_URL__") {
+    API_BASE_URL = placeholder;
+  } else {
+    // Use relative URLs for nginx proxy
+    API_BASE_URL = "/api";
+  }
+}
 
 // Debug log to verify correct API URL is being used
 console.log("Environment:", isDevelopment ? "Development" : "Production");
