@@ -54,3 +54,6 @@ pids/
 # Temporary folders
 tmp/
 temp/
+
+# Scripts (only needed for local testing)
+scripts/
