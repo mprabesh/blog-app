@@ -1,8 +1,9 @@
 const { redisClient } = require('../utils/redis');
 const logger = require('../utils/logger');
+const mongoose = require('mongoose');
 
 /**
- * Health check controller with Redis status
+ * Health check controller with MongoDB and Redis status
  */
 
 /**
@@ -17,9 +18,41 @@ const healthCheck = async (req, res) => {
       environment: process.env.NODE_ENV || 'development',
       services: {
         api: 'healthy',
+        mongodb: 'unknown',
         redis: 'unknown'
       }
     };
+
+    // Check MongoDB connection
+    try {
+      const mongoState = mongoose.connection.readyState;
+      switch (mongoState) {
+        case 0:
+          health.services.mongodb = 'disconnected';
+          break;
+        case 1:
+          health.services.mongodb = 'healthy';
+          break;
+        case 2:
+          health.services.mongodb = 'connecting';
+          break;
+        case 3:
+          health.services.mongodb = 'disconnecting';
+          break;
+        default:
+          health.services.mongodb = 'unknown';
+      }
+
+      // Test MongoDB with a simple ping
+      if (mongoState === 1) {
+        await mongoose.connection.db.admin().ping();
+        health.services.mongodb = 'healthy';
+      }
+    } catch (error) {
+      logger.error('MongoDB health check failed:', error.message);
+      health.services.mongodb = 'unhealthy';
+      health.status = 'degraded'; // MongoDB is critical for app functionality
+    }
 
     // Check Redis connection
     try {
@@ -42,8 +75,9 @@ const healthCheck = async (req, res) => {
       // Don't mark as degraded - app can work without Redis
     }
 
-    // Always return 200 - app works without Redis
-    res.status(200).json(health);
+    // Return appropriate status code
+    const statusCode = health.status === 'degraded' ? 503 : 200;
+    res.status(statusCode).json(health);
   } catch (error) {
     logger.error('Health check error:', error.message);
     res.status(500).json({
@@ -70,6 +104,12 @@ const detailedHealthCheck = async (req, res) => {
           status: 'healthy',
           version: process.env.npm_package_version || '1.0.0'
         },
+        mongodb: {
+          status: 'unknown',
+          connected: false,
+          readyState: 0,
+          responseTime: null
+        },
         redis: {
           status: 'unknown',
           connected: false,
@@ -81,6 +121,44 @@ const detailedHealthCheck = async (req, res) => {
         }
       }
     };
+
+    // Detailed MongoDB health check
+    try {
+      const mongoState = mongoose.connection.readyState;
+      health.services.mongodb.readyState = mongoState;
+      health.services.mongodb.connected = mongoState === 1;
+
+      if (mongoState === 1) {
+        const startTime = Date.now();
+        await mongoose.connection.db.admin().ping();
+        const responseTime = Date.now() - startTime;
+        
+        health.services.mongodb.status = 'healthy';
+        health.services.mongodb.responseTime = responseTime;
+        health.services.mongodb.host = mongoose.connection.host;
+        health.services.mongodb.name = mongoose.connection.name;
+      } else {
+        switch (mongoState) {
+          case 0:
+            health.services.mongodb.status = 'disconnected';
+            break;
+          case 2:
+            health.services.mongodb.status = 'connecting';
+            break;
+          case 3:
+            health.services.mongodb.status = 'disconnecting';
+            break;
+          default:
+            health.services.mongodb.status = 'unknown';
+        }
+        health.status = 'degraded'; // MongoDB is critical
+      }
+    } catch (error) {
+      logger.error('Detailed MongoDB health check failed:', error.message);
+      health.services.mongodb.status = 'unhealthy';
+      health.services.mongodb.error = error.message;
+      health.status = 'degraded'; // MongoDB is critical
+    }
 
     // Detailed Redis health check
     try {
@@ -115,8 +193,9 @@ const detailedHealthCheck = async (req, res) => {
       // Don't mark as degraded - app can work without Redis
     }
 
-    // Always return 200 - app works without Redis
-    res.status(200).json(health);
+    // Return appropriate status code
+    const statusCode = health.status === 'degraded' ? 503 : 200;
+    res.status(statusCode).json(health);
   } catch (error) {
     logger.error('Detailed health check error:', error.message);
     res.status(500).json({
@@ -129,21 +208,45 @@ const detailedHealthCheck = async (req, res) => {
 
 /**
  * Readiness probe for Kubernetes/Docker
+ * 
+ * This endpoint determines if the application is ready to receive traffic.
+ * It should return 200 only when the app can successfully handle requests.
  */
 const readinessCheck = async (req, res) => {
   try {
-    // App is ready if it can process requests
-    // Redis connection is not required for basic functionality
-    const ready = {
-      ready: true,
-      timestamp: new Date().toISOString(),
-      services: {
-        api: true,
-        redis: redisClient.isReady()
-      }
+    let isReady = true;
+    const services = {
+      api: true,
+      mongodb: false,
+      redis: redisClient.isReady()
     };
 
-    res.status(200).json(ready);
+    // Check MongoDB - critical for readiness
+    try {
+      const mongoState = mongoose.connection.readyState;
+      if (mongoState === 1) {
+        // Test with a simple ping
+        await mongoose.connection.db.admin().ping();
+        services.mongodb = true;
+      } else {
+        services.mongodb = false;
+        isReady = false; // MongoDB is required for app functionality
+      }
+    } catch (error) {
+      logger.error('MongoDB readiness check failed:', error.message);
+      services.mongodb = false;
+      isReady = false;
+    }
+
+    const ready = {
+      ready: isReady,
+      timestamp: new Date().toISOString(),
+      services
+    };
+
+    // Return 503 if not ready, 200 if ready
+    const statusCode = isReady ? 200 : 503;
+    res.status(statusCode).json(ready);
   } catch (error) {
     logger.error('Readiness check error:', error.message);
     res.status(503).json({
